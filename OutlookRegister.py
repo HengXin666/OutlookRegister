@@ -129,10 +129,16 @@ def Outlook_register(page, email, password):
                 page.wait_for_timeout(500)
  
             except:
-                if page.get_by_text('一些异常活动').count() > 0:
+                try:
+                    page.get_by_text('一些异常活动').wait_for(timeout=1200)
                     print("IP不够纯净或者机器人检查未通过，请检查浏览器！！")
                     return False
+                
+                except:
+                    pass
+                
                 break
+
 
         else: 
             raise TimeoutError
