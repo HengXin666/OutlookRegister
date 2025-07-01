@@ -35,7 +35,7 @@ def handle_oauth2_form(page,email):
         page.locator('#idSIButton9').click(timeout=5000)
 
         # 之前是要的，现在不确定了，暂时放着吧。
-        page.locator('[data-testid="secondaryButton"]').click(timeout=7000) 
+        page.locator('[data-testid="secondaryButton"]').click(timeout=5000) 
         button = page.locator('[data-testid="secondaryButton"]')
         button.wait_for(timeout=2500)
         page.wait_for_timeout(random.randint(1600,2000))
@@ -86,7 +86,7 @@ def get_access_token(page, email):
 
         try:
 
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(250)
             url = f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?{'&'.join(f'{k}={quote(v)}' for k,v in params.items())}"
             page.goto(url)
 
@@ -98,7 +98,7 @@ def get_access_token(page, email):
                     return False
                 continue
 
-    with page.expect_response(lambda response: 'localhost:8000' in response.url,timeout=50000) as response_info:
+    with page.expect_response(lambda response: redirect_url in response.url,timeout=50000) as response_info:
 
         handle_oauth2_form(page, email)
 

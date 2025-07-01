@@ -180,7 +180,7 @@ def Outlook_register(page, email, password):
         page.wait_for_timeout(3200)
         if page.get_by_text("保持登录状态?").count() > 0:
             page.get_by_text('否').click(timeout=12000)
-        page.locator('.splitPrimaryButton[aria-label="新邮件"]').wait_for(timeout=40000)
+        page.locator('.splitPrimaryButton[aria-label="新邮件"]').wait_for(timeout=26000)
         return True
 
     except:
@@ -266,4 +266,4 @@ if __name__ == '__main__':
     proxy = data['proxy']
     enable_oauth2 = data['enable_oauth2']
 
-    main(concurrent_flows=1, max_tasks=4)
+    main(concurrent_flows=5, max_tasks=40)
