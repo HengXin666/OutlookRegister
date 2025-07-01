@@ -95,7 +95,7 @@ def get_access_token(page, email):
         except:
                 current_times = current_times + 1 
                 if current_times == max_time:
-                    return False
+                    return False, False, False
                 continue
 
     with page.expect_response(lambda response: redirect_url in response.url,timeout=50000) as response_info:
@@ -139,4 +139,4 @@ def get_access_token(page, email):
 
     else:
 
-        return False
+        return False, False, False

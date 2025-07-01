@@ -117,7 +117,7 @@ def Outlook_register(page, email, password):
         page.keyboard.press('Tab')
         page.wait_for_timeout(100)
 
-        for _ in range(0, max_captcha_retries):
+        for _ in range(0, max_captcha_retries + 1):
 
             page.keyboard.press('Enter')
             page.wait_for_timeout(11000)
@@ -126,11 +126,12 @@ def Outlook_register(page, email, password):
 
             try:
                 page.wait_for_event("request", lambda req: req.url.startswith("blob:https://iframe.hsprotect.net/"), timeout=1700)
-
+                page.wait_for_timeout(500)
+ 
+            except:
                 if page.get_by_text('一些异常活动').count() > 0:
                     print("IP不够纯净或者机器人检查未通过，请检查浏览器！！")
                     return False
-            except:
                 break
 
         else: 
