@@ -63,6 +63,7 @@ def Outlook_register(page, email, password):
 
     try:
 
+        start_time = time.time()
         page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=20000, wait_until="domcontentloaded")
         page.get_by_text('同意并继续').click(timeout=30000)
 
@@ -77,7 +78,7 @@ def Outlook_register(page, email, password):
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
         page.locator('[type="password"]').fill(password,timeout=10000)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-        
+
         page.wait_for_timeout(500)
         page.locator('[name="BirthYear"]').fill(year,timeout=10000)
 
@@ -97,6 +98,10 @@ def Outlook_register(page, email, password):
 
         page.locator('#lastNameInput').fill(lastname,timeout=10000)
         page.locator('#firstNameInput').fill(firstname,timeout=10000)
+
+        if time.time() - start_time < bot_protection_wait:
+            page.wait_for_timeout((bot_protection_wait - time.time() + start_time)*1000)
+        
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
         page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached',timeout=22000)
 
@@ -136,7 +141,7 @@ def Outlook_register(page, email, password):
                 
                 except:
                     pass
-                
+
                 break
 
 
@@ -270,6 +275,7 @@ if __name__ == '__main__':
         data = json.load(f) 
 
     browser_path = data['browser_path']
+    bot_protection_wait = data['Bot_protection_wait']
     max_captcha_retries = data['max_captcha_retries']
     proxy = data['proxy']
     enable_oauth2 = data['enable_oauth2']
