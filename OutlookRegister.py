@@ -73,13 +73,13 @@ def Outlook_register(page, email, password):
     
     try:
 
-        page.locator('[aria-label="新建电子邮件"]').type(email,delay=50,timeout=10000)
+        page.locator('[aria-label="新建电子邮件"]').fill(email,timeout=10000)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-        page.locator('[type="password"]').type(password,delay=50,timeout=10000)
+        page.locator('[type="password"]').fill(password,timeout=10000)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
         
         page.wait_for_timeout(500)
-        page.locator('[name="BirthYear"]').type(year,delay=50,timeout=10000)
+        page.locator('[name="BirthYear"]').fill(year,timeout=10000)
 
         try:
 
@@ -95,10 +95,10 @@ def Outlook_register(page, email, password):
 
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
 
-        page.locator('#lastNameInput').type(lastname,delay=50,timeout=10000)
-        page.locator('#firstNameInput').type(firstname,delay=48,timeout=10000)
+        page.locator('#lastNameInput').fill(lastname,timeout=10000)
+        page.locator('#firstNameInput').fill(firstname,timeout=10000)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-        page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached',timeout=20000)
+        page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached',timeout=22000)
 
         page.wait_for_timeout(400)
 
@@ -110,7 +110,7 @@ def Outlook_register(page, email, password):
             print("这是FunCaptcha，并非px按压，对应内容请自行处理。")
             return False
 
-        page.wait_for_event("request", lambda req: req.url.startswith("blob:https://iframe.hsprotect.net/"), timeout=20000)
+        page.wait_for_event("request", lambda req: req.url.startswith("blob:https://iframe.hsprotect.net/"), timeout=22000)
         page.wait_for_timeout(800)
 
         page.keyboard.press('Tab')
@@ -150,7 +150,7 @@ def Outlook_register(page, email, password):
         return True
 
     try:
-        page.locator('[data-testid="secondaryButton"]').click(timeout=15000) 
+        page.locator('[data-testid="secondaryButton"]').click(timeout=20000) 
         button = page.locator('[data-testid="secondaryButton"]')
         button.wait_for(timeout=5000)
 
@@ -210,6 +210,7 @@ def process_single_flow():
             with open(r'outlook_token.txt', 'a') as f2:
                 f2.write(email + "@outlook.com---" + password + "---" + refresh_token + "---" + access_token  + "---" + str(expire_at) + "\n") 
             print(email + "@outlook.com的令牌已写入文件")
+            return True
         else:
             return False
 

@@ -31,11 +31,11 @@ def generate_code_challenge(code_verifier):
 def handle_oauth2_form(page,email):
     try:
 
-        page.locator('[name="loginfmt"]').type(f'{email}@outlook.com',delay=50,timeout=10000)
+        page.locator('[name="loginfmt"]').fill(f'{email}@outlook.com',timeout=20000)
         page.locator('#idSIButton9').click(timeout=5000)
 
         # 之前是要的，现在不确定了，暂时放着吧。
-        page.locator('[data-testid="secondaryButton"]').click(timeout=5000) 
+        page.locator('[data-testid="secondaryButton"]').click(timeout=3000) 
         button = page.locator('[data-testid="secondaryButton"]')
         button.wait_for(timeout=2500)
         page.wait_for_timeout(random.randint(1600,2000))
