@@ -1,8 +1,10 @@
 import time
+import json
 import random
 import string
 import secrets
 from faker import Faker
+from get_token import get_access_token
 from playwright.sync_api import sync_playwright
 from concurrent.futures import ThreadPoolExecutor
 
@@ -38,7 +40,7 @@ def OpenBrowser():
         p = sync_playwright().start()
         browser = p.chromium.launch(
             executable_path=browser_path,
-            headless=True,
+            headless=False,
             proxy={
                 "server": proxy,
                 "bypass": "localhost",
@@ -49,9 +51,8 @@ def OpenBrowser():
     except Exception as e:
         print(e)
 
-def Outlook_register(browser, email, password):
+def Outlook_register(page, email, password):
 
-    page = browser.new_page()
     fake = Faker()
 
     lastname = fake.last_name()
@@ -97,9 +98,9 @@ def Outlook_register(browser, email, password):
         page.locator('#lastNameInput').type(lastname,delay=50,timeout=10000)
         page.locator('#firstNameInput').type(firstname,delay=48,timeout=10000)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-        page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached',timeout=10000)
+        page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached',timeout=20000)
 
-        page.wait_for_timeout(700)
+        page.wait_for_timeout(400)
 
         if page.get_by_text('一些异常活动').count() > 0:
             print("IP不够纯净或者机器人检查未通过，请检查浏览器！！")
@@ -110,55 +111,80 @@ def Outlook_register(browser, email, password):
             return False
 
         page.wait_for_event("request", lambda req: req.url.startswith("blob:https://iframe.hsprotect.net/"), timeout=20000)
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(800)
 
         page.keyboard.press('Tab')
         page.keyboard.press('Tab')
         page.wait_for_timeout(100)
 
-        page.keyboard.press('Enter')
-        page.wait_for_timeout(11000)
-        page.keyboard.press('Enter')
-        
-        page.locator('[data-testid="secondaryButton"]').click(timeout=25000) 
+        for _ in range(0, max_captcha_retries):
+
+            page.keyboard.press('Enter')
+            page.wait_for_timeout(11000)
+            page.keyboard.press('Enter')
+            page.wait_for_event("request", lambda req: req.url.startswith("https://browser.events.data.microsoft.com"), timeout=40000)
+
+            try:
+                page.wait_for_event("request", lambda req: req.url.startswith("blob:https://iframe.hsprotect.net/"), timeout=1700)
+
+                if page.get_by_text('一些异常活动').count() > 0:
+                    print("IP不够纯净或者机器人检查未通过，请检查浏览器！！")
+                    return False
+            except:
+                break
+
+        else: 
+            raise TimeoutError
+
+    except:
+
+        print(f"等待时间过长或按压重试次数达到最大，请检查你的代理IP。")
+        return False  
+    
+    filename = 'logged_email.txt' if enable_oauth2 else 'unlogged_email.txt'
+    with open(filename, 'a', encoding='utf-8') as f:
+        f.write(f"{email}@outlook.com: {password}\n")
+    print(f'注册成功 - {email}@outlook.com: {password}')
+
+    if not enable_oauth2:
+        return True
+
+    try:
+        page.locator('[data-testid="secondaryButton"]').click(timeout=15000) 
         button = page.locator('[data-testid="secondaryButton"]')
         button.wait_for(timeout=5000)
-        
-    except Exception as e:
 
-        print(f"等待时间过长或按压未通过，请检查IP。")
+    except:
+
+        print(f"等待时间过长，请检查IP。")
         return False   
 
     try:
 
-        page.wait_for_timeout(random.randint(1600,2400))
+        page.wait_for_timeout(random.randint(1600,2000))
         button.click(timeout=6000)
         button = page.locator('[data-testid="secondaryButton"]')
         button.wait_for(timeout=5000)
-        page.wait_for_timeout(random.randint(1600,2400))
+        page.wait_for_timeout(random.randint(1600,2000))
         button.click(timeout=6000)
         button = page.locator('[data-testid="secondaryButton"]')
         button.wait_for(timeout=5000)
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(3000)
         button.click(timeout=6000)
 
     except:
         pass
 
     try:
+
         page.wait_for_timeout(3200)
         if page.get_by_text("保持登录状态?").count() > 0:
             page.get_by_text('否').click(timeout=12000)
-
-    except Exception as e:
-        print(f"错误：{e}")
-        return False
-
-    try:
-        page.locator('.splitPrimaryButton[aria-label="新邮件"]').wait_for(timeout=24000)
+        page.locator('.splitPrimaryButton[aria-label="新邮件"]').wait_for(timeout=40000)
         return True
+
     except:
-        print(f'未进入邮箱界面，可能无法使用Token收件。')
+        print(f'邮箱未初始化，无法使用Token收件。')
         return False
 
 def process_single_flow():
@@ -166,18 +192,30 @@ def process_single_flow():
     try:
         browser = None
         browser, p = OpenBrowser()
+        page = browser.new_page()
 
         email =  random_email(random.randint(12, 14))
         password = generate_strong_password(random.randint(11, 15))
-        result = Outlook_register(browser, email, password)
-        if result:
-            with open('result.txt', 'a', encoding='utf-8') as f:
-                f.write(f"{email}@outlook.com: {password}\n")
-            print(f'注册成功 - {email}@outlook.com: {password}')
+        result = Outlook_register(page, email, password)
+        if result and not enable_oauth2:
+
             return True
+        
+        elif not result:
+            return False
+        
+        token_result = get_access_token(page, email)
+        if token_result[0]:
+            refresh_token, access_token, expire_at =  token_result
+            with open(r'outlook_token.txt', 'a') as f2:
+                f2.write(email + "@outlook.com---" + password + "---" + refresh_token + "---" + access_token  + "---" + str(expire_at) + "\n") 
+            print(email + "@outlook.com的令牌已写入文件")
+        else:
+            return False
+
     except:
         return False
-
+    
     finally:
         browser.close()
         p.stop()
@@ -220,11 +258,13 @@ def main(concurrent_flows=10, max_tasks=1000):
 
 if __name__ == '__main__':
 
-
     target_url = 'https://outlook.live.com/mail/0/?prompt=create_account'
-    # 使用本地代理, 可以自行调整为IP池
-    proxy = 'http://127.0.0.1:7897'
+    with open('config.json', 'r', encoding='utf-8') as f:
+        data = json.load(f) 
 
-    browser_path = r""
+    browser_path = data['browser_path']
+    max_captcha_retries = data['max_captcha_retries']
+    proxy = data['proxy']
+    enable_oauth2 = data['enable_oauth2']
 
-    main(concurrent_flows=2, max_tasks=10)
+    main(concurrent_flows=1, max_tasks=4)
