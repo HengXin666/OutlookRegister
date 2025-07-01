@@ -11,13 +11,13 @@ Outlook 注册机
 1.在`config.json`填写你的**浏览器目录**和**代理**。  
 2.使用本地代理IP**搭建代理池**。  
 3.在`main()`中调整并发数量与最大注册量。  
-4.如果你需要Oauth2，请在`config.json`中修改`"enable_oauth2"`的值为`true`并填写`Scopes`与`redirect_url`。
+4.如果你需要Oauth2，请在`config.json`中修改`"enable_oauth2"`的值为`true`并填写`Scopes`与`redirect_url`。  
 
 
 
 有人需要再弄吧：  
-1.接入代理IP网站 
-2.agent/时区 调整 
+1.接入代理IP网站  
+2.agent/时区 调整  
 
 注意事项：  
 选用好的**IP**与**浏览器**，否则可能过不去检测，同一IP短时间不宜多次注册。  

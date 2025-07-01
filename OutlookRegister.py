@@ -40,7 +40,7 @@ def OpenBrowser():
         p = sync_playwright().start()
         browser = p.chromium.launch(
             executable_path=browser_path,
-            headless=False,
+            headless=True,
             proxy={
                 "server": proxy,
                 "bypass": "localhost",
@@ -258,7 +258,6 @@ def main(concurrent_flows=10, max_tasks=1000):
 
 if __name__ == '__main__':
 
-    target_url = 'https://outlook.live.com/mail/0/?prompt=create_account'
     with open('config.json', 'r', encoding='utf-8') as f:
         data = json.load(f) 
 
