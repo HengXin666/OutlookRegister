@@ -40,11 +40,11 @@ def OpenBrowser():
         p = sync_playwright().start()
         browser = p.chromium.launch(
             executable_path=browser_path,
-            headless=True,
+            headless=False,
             proxy={
                 "server": proxy,
                 "bypass": "localhost",
-            },
+            },            
         ) 
         return browser,p
 
@@ -63,8 +63,10 @@ def Outlook_register(page, email, password):
 
     try:
 
-        start_time = time.time()
         page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=20000, wait_until="domcontentloaded")
+        page.get_by_text('同意并继续').wait_for(timeout=30000)
+        start_time = time.time()
+        page.wait_for_timeout(2000)
         page.get_by_text('同意并继续').click(timeout=30000)
 
     except: 
@@ -74,29 +76,37 @@ def Outlook_register(page, email, password):
     
     try:
 
-        page.locator('[aria-label="新建电子邮件"]').fill(email,timeout=10000)
+        page.locator('[aria-label="新建电子邮件"]').type(email,delay=80,timeout=10000)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-        page.locator('[type="password"]').fill(password,timeout=10000)
+        page.wait_for_timeout(400)
+        page.locator('[type="password"]').type(password,delay=60,timeout=10000)
+        page.wait_for_timeout(400)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-
+        
         page.wait_for_timeout(500)
         page.locator('[name="BirthYear"]').fill(year,timeout=10000)
 
         try:
 
+            page.wait_for_timeout(600)
             page.locator('[name="BirthMonth"]').select_option(value=month,timeout=2000)
+            page.wait_for_timeout(1200)
             page.locator('[name="BirthDay"]').select_option(value=day)
         
         except:
 
             page.locator('[name="BirthMonth"]').click()
+            page.wait_for_timeout(400)
             page.locator(f'[role="option"]:text-is("{month}月")').click()
+            page.wait_for_timeout(1200)
             page.locator('[name="BirthDay"]').click()
+            page.wait_for_timeout(400)
             page.locator(f'[role="option"]:text-is("{day}日")').click()
 
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
 
-        page.locator('#lastNameInput').fill(lastname,timeout=10000)
+        page.locator('#lastNameInput').type(lastname,delay=120,timeout=10000)
+        page.wait_for_timeout(700)
         page.locator('#firstNameInput').fill(firstname,timeout=10000)
 
         if time.time() - start_time < bot_protection_wait:
@@ -131,7 +141,6 @@ def Outlook_register(page, email, password):
 
             try:
                 page.wait_for_event("request", lambda req: req.url.startswith("blob:https://iframe.hsprotect.net/"), timeout=1700)
-                page.wait_for_timeout(500)
  
             except:
                 try:
@@ -141,7 +150,7 @@ def Outlook_register(page, email, password):
                 
                 except:
                     pass
-
+                page.wait_for_timeout(500)
                 break
 
 
