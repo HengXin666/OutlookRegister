@@ -1,3 +1,4 @@
+import os
 import time
 import json
 import random
@@ -44,7 +45,7 @@ def OpenBrowser():
             proxy={
                 "server": proxy,
                 "bypass": "localhost",
-            },            
+            },
         ) 
         return browser,p
 
@@ -71,7 +72,7 @@ def Outlook_register(page, email, password):
 
     except: 
 
-        print("无法进入注册界面，建议更换IP！ ")
+        print("[Error: IP] - IP质量不佳，无法进入注册界面。 ")
         return False
     
     try:
@@ -118,11 +119,11 @@ def Outlook_register(page, email, password):
         page.wait_for_timeout(400)
 
         if page.get_by_text('一些异常活动').count() > 0:
-            print("IP不够纯净或者机器人检查未通过，请检查浏览器！！")
+            print("[Error: IP or broswer] - 当前IP注册频率过快。检查IP与是否为指纹浏览器并关闭了无头模式。")
             return False
 
         if page.locator('iframe#enforcementFrame').count() > 0:
-            print("这是FunCaptcha，并非px按压，对应内容请自行处理。")
+            print("[Error: FunCaptcha] - 验证码类型错误，非按压验证码。 ")
             return False
 
         page.wait_for_event("request", lambda req: req.url.startswith("blob:https://iframe.hsprotect.net/"), timeout=22000)
@@ -145,27 +146,26 @@ def Outlook_register(page, email, password):
             except:
                 try:
                     page.get_by_text('一些异常活动').wait_for(timeout=1200)
-                    print("IP不够纯净或者机器人检查未通过，请检查浏览器！！")
+                    print("[Error: Rate limit] - 正常通过验证码，但当前IP注册频率过快。")
                     return False
-                
+
                 except:
                     pass
                 page.wait_for_timeout(500)
                 break
-
 
         else: 
             raise TimeoutError
 
     except:
 
-        print(f"等待时间过长或按压重试次数达到最大，请检查你的代理IP。")
+        print(f"[Error: IP] - 加载超时或因触发机器人检测导致按压次数达到最大仍未通过。")
         return False  
     
-    filename = 'logged_email.txt' if enable_oauth2 else 'unlogged_email.txt'
+    filename = 'Results\\logged_email.txt' if enable_oauth2 else 'Results\\unlogged_email.txt'
     with open(filename, 'a', encoding='utf-8') as f:
         f.write(f"{email}@outlook.com: {password}\n")
-    print(f'注册成功 - {email}@outlook.com: {password}')
+    print(f'[Success: Email Registration] - {email}@outlook.com: {password}')
 
     if not enable_oauth2:
         return True
@@ -177,7 +177,7 @@ def Outlook_register(page, email, password):
 
     except:
 
-        print(f"等待时间过长，请检查IP。")
+        print(f"[Error: Timeout] - 无法找到按钮。")
         return False   
 
     try:
@@ -205,7 +205,7 @@ def Outlook_register(page, email, password):
         return True
 
     except:
-        print(f'邮箱未初始化，无法使用Token收件。')
+        print(f'[Error: Timeout] - 邮箱未初始化，无法正常收件。')
         return False
 
 def process_single_flow():
@@ -228,9 +228,9 @@ def process_single_flow():
         token_result = get_access_token(page, email)
         if token_result[0]:
             refresh_token, access_token, expire_at =  token_result
-            with open(r'outlook_token.txt', 'a') as f2:
+            with open(r'Results\outlook_token.txt', 'a') as f2:
                 f2.write(email + "@outlook.com---" + password + "---" + refresh_token + "---" + access_token  + "---" + str(expire_at) + "\n") 
-            print(email + "@outlook.com的令牌已写入文件")
+            print(f'[Success: TokenAuth] - {email}@outlook.com')
             return True
         else:
             return False
@@ -276,17 +276,23 @@ def main(concurrent_flows=10, max_tasks=1000):
 
             time.sleep(0.5)
 
-        print(f"所有任务已完成 - 共 {max_tasks} 个，成功 {succeeded_tasks}，失败 {failed_tasks}")
+        print(f"[Info: Result] - 共 {max_tasks} 个，成功 {succeeded_tasks}，失败 {failed_tasks}")
 
 if __name__ == '__main__':
 
+
     with open('config.json', 'r', encoding='utf-8') as f:
         data = json.load(f) 
+
+    os.makedirs("Results", exist_ok=True)
 
     browser_path = data['browser_path']
     bot_protection_wait = data['Bot_protection_wait']
     max_captcha_retries = data['max_captcha_retries']
     proxy = data['proxy']
     enable_oauth2 = data['enable_oauth2']
+    concurrent_flows = data["concurrent_flows"]
+    max_tasks = data["max_tasks"]
 
-    main(concurrent_flows=5, max_tasks=40)
+
+    main(concurrent_flows, max_tasks)
