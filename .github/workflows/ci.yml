@@ -33,13 +33,27 @@ jobs:
         run: uv run python -m compileall main.py get_token.py utils.py controllers
 
       - name: Start subscription proxy
+        timeout-minutes: 3
         env:
           PROXY_SUBSCRIPTION_URL: ${{ secrets.PROXY_SUBSCRIPTION_URL }}
         run: |
           test -n "$PROXY_SUBSCRIPTION_URL"
           mkdir -p proxy
           curl -fsSL "$PROXY_SUBSCRIPTION_URL" -o proxy/config.yaml
-          printf '\nport: 2334\n' >> proxy/config.yaml
+          uv run python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path("proxy/config.yaml")
+          config = yaml.safe_load(path.read_text(encoding="utf-8"))
+          if not isinstance(config, dict):
+              raise SystemExit("subscription content is not a Clash YAML config")
+
+          config["port"] = 2334
+          config["mixed-port"] = 2334
+          config["allow-lan"] = False
+          path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
+          PY
           curl -fsSL https://github.com/MetaCubeX/mihomo/releases/download/v1.19.15/mihomo-linux-amd64-v1.19.15.gz -o proxy/mihomo.gz
           gunzip proxy/mihomo.gz
           chmod +x proxy/mihomo
