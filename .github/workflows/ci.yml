@@ -32,6 +32,40 @@ jobs:
       - name: Syntax check
         run: uv run python -m compileall main.py get_token.py utils.py controllers
 
+      - name: Start subscription proxy
+        env:
+          PROXY_SUBSCRIPTION_URL: ${{ secrets.PROXY_SUBSCRIPTION_URL }}
+        run: |
+          test -n "$PROXY_SUBSCRIPTION_URL"
+          mkdir -p proxy
+          curl -fsSL "$PROXY_SUBSCRIPTION_URL" -o proxy/config.yaml
+          printf '\nport: 2334\n' >> proxy/config.yaml
+          curl -fsSL https://github.com/MetaCubeX/mihomo/releases/download/v1.19.15/mihomo-linux-amd64-v1.19.15.gz -o proxy/mihomo.gz
+          gunzip proxy/mihomo.gz
+          chmod +x proxy/mihomo
+          ./proxy/mihomo -f proxy/config.yaml > proxy/mihomo.log 2>&1 &
+          echo $! > proxy/mihomo.pid
+          for i in {1..30}; do
+            if curl -fsS --proxy http://127.0.0.1:2334 https://www.microsoft.com >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat proxy/mihomo.log
+          exit 1
+
+      - name: Configure workflow proxy
+        run: |
+          uv run python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("config.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          data["proxy"] = "http://127.0.0.1:2334"
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")
+          PY
+
       - name: Run register
         run: |
           mkdir -p Results
