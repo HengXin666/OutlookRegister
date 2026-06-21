@@ -7,14 +7,13 @@ from utils import random_email, generate_strong_password
 from controllers.patchright_controller import PatchrightController
 from controllers.playwright_controller import PlaywrightController
 
-
-
-# --- 不确定有无帮助 ---
+# ---- 不确定有无帮助 ----
 # 0. 视窗大小
 # 1. CDP 检测：wait_for_timeout --> time.sleep()
-# 2. 使用 launch_persistent_context 
+# 2. 使用 launch_persistent_context
 # 3. 避免短时间访问
 # 4. 模拟真人轨迹
+
 
 def process_single_flow(controller):
     page = None
@@ -22,7 +21,7 @@ def process_single_flow(controller):
     try:
         page = controller.get_thread_page()
 
-        email = random_email()
+        email = random_email(prefix=controller.email_prefix)
         password = generate_strong_password()
 
         # 调用 controller 特定的注册方法
@@ -35,10 +34,16 @@ def process_single_flow(controller):
 
         token_result = get_access_token(page, email)
         if token_result[0]:
-            refresh_token, access_token, expire_at =  token_result
-            with open(os.path.join(os.path.dirname(__file__), 'Results', 'outlook_token.txt'), 'a', encoding='utf-8') as f2:
-                f2.write(f"{email}{controller.email_suffix}---{password}---{refresh_token}---{access_token}---{expire_at}\n") 
-            print(f'[Success: TokenAuth] - {email}{controller.email_suffix}')
+            refresh_token, access_token, expire_at = token_result
+            with open(
+                os.path.join(os.path.dirname(__file__), "Results", "outlook_token.txt"),
+                "a",
+                encoding="utf-8",
+            ) as f2:
+                f2.write(
+                    f"{email}{controller.email_suffix}----{password}----{refresh_token}----{access_token}----{expire_at}\n"
+                )
+            print(f"[Success: TokenAuth] - {email}{controller.email_suffix}")
             return True
         else:
             return False
@@ -46,10 +51,11 @@ def process_single_flow(controller):
     except Exception as e:
         print(e)
         return False
-    
+
     finally:
 
         controller.clean_up(page, "done_browser")
+
 
 def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100):
     task_counter = 0
@@ -88,20 +94,19 @@ def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100):
 
 if __name__ == "__main__":
 
-    with open('config.json', 'r', encoding='utf-8') as f:
-        data = json.load(f) 
+    with open("config.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
     os.makedirs("Results", exist_ok=True)
 
     max_tasks = data["max_tasks"]
     concurrent_flows = data["concurrent_flows"]
 
-    if data["choose_browser"] =="patchright":
+    if data["choose_browser"] == "patchright":
         selected_controller = PatchrightController()
-    elif data["choose_browser"] =="playwright":
+    elif data["choose_browser"] == "playwright":
         selected_controller = PlaywrightController()
     else:
         print("不支持的浏览器类型，填写patchright或者playwright")
-  
 
     try:
         run_concurrent_flows(selected_controller, concurrent_flows, max_tasks)

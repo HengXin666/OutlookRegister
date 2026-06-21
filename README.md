@@ -14,14 +14,15 @@ Outlook 注册机
 4.`client_id`与`redirect_url`可以前往[Azure](https://azure.microsoft.com/zh-cn?OCID=cmmyhidqdn5_brandzone__EFID__)注册获取，不需要Oauth2可留空。  
 5.`client_id`与`redirect_url`格式通常类似于`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`和`http://localhost:8000`。  
 6.`Scopes`按照申请的权限填，不需要Oauth2可留空。  
+7.`email_prefix`为空时不设置前缀；非空时会把随机邮箱名前缀替换成该值。  
 
 使用教程：  
 1.使用本地代理IP**搭建代理池**，在`config.json`填写你的代理地址。  
 2.在设置中调整并发与最大注册量。  
 3.如果你需要Oauth2，请在`config.json`中修改`"enable_oauth2"`的值为`true`并填写`Scopes`、`client_id`与`redirect_url`。  
-4.安装相关依赖`pip install -r requirements.txt`，如果未安装相关浏览器，使用`patchright install chromium`。  
+4.安装相关依赖`uv sync`，如果未安装相关浏览器，使用`uv run patchright install chromium`。  
 5.视运行脚本填写或留空`browser_path`。  
-6.`python main.py`。  
+6.`uv run python main.py`。  
 
 注意事项：  
 **IP**与成功率高度正相关，同一IP短时间不宜多次注册。单IP一次五个并发跑一轮短时间基本就不再能使用了.  

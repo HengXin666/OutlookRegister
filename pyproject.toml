@@ -1,0 +1,15 @@
+[project]
+name = "outlook-register"
+version = "0.1.0"
+description = "Outlook registration automation"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "faker",
+    "patchright",
+    "playwright==1.53.0",
+    "requests",
+]
+
+[tool.uv]
+package = false
