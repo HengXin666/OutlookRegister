@@ -8,6 +8,7 @@ dependencies = [
     "faker",
     "patchright",
     "playwright==1.53.0",
+    "pyyaml",
     "requests",
 ]
 
