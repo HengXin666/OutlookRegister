@@ -12,10 +12,8 @@
         "client_id": "03b27618-11a3-4c4c-bdc7-0db1884227d2",
         "redirect_url": "http://localhost",
         "Scopes": [
-            "offline_access",
-            "https://graph.microsoft.com/Mail.ReadWrite",
-            "https://graph.microsoft.com/Mail.Send",
-            "https://graph.microsoft.com/User.Read"
+            "https://graph.microsoft.com/.default",
+            "offline_access"
         ]
     },
     "playwright": {

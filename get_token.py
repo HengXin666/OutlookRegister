@@ -57,12 +57,12 @@ def _try_get_access_token(page, email):
         'redirect_uri': redirect_url,
         'scope': ' '.join(SCOPES),
         'response_mode': 'query',
-        'prompt': 'select_account',
+        'prompt': 'consent',
         'code_challenge': code_challenge,
         'code_challenge_method': 'S256'
     }
 
-    authorize_url = f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?{'&'.join(f'{k}={quote(v)}' for k, v in params.items())}"
+    authorize_url = f"https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?{'&'.join(f'{k}={quote(v)}' for k, v in params.items())}"
 
     captured_url = None
 
@@ -112,7 +112,7 @@ def _try_get_access_token(page, email):
 
     try:
         response = requests.post(
-            'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+            'https://login.microsoftonline.com/consumers/oauth2/v2.0/token',
             data={
                 'client_id': client_id,
                 'code': auth_code,
