@@ -165,6 +165,15 @@ jobs:
           cat proxy/mihomo.log
           exit 1
 
+      - name: Check workflow proxy
+        run: |
+          echo "Proxy exit IP:"
+          curl -fsS --proxy http://127.0.0.1:2334 https://api.ipify.org
+          echo
+          curl -fsSIL --proxy http://127.0.0.1:2334 \
+            https://outlook.live.com/mail/0/?prompt=create_account \
+            | sed -n '1,12p'
+
       - name: Configure workflow proxy
         run: |
           uv run python - <<'PY'
