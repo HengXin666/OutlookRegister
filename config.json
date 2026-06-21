@@ -1,8 +1,8 @@
 {
     "choose_browser": "patchright",
-    "email_prefix": "",
+    "email_prefix": "loli.",
     "email_suffix": "@hotmail.com",
-    "proxy": "http://127.0.0.1:7897",
+    "proxy": "http://127.0.0.1:2334",
     "bot_protection_wait": 11,
     "max_captcha_retries": 2,
     "concurrent_flows": 5,

@@ -2,13 +2,15 @@ import random
 import string
 import secrets
 
+EMAIL_PREFIX_CHARS = set(string.ascii_letters + string.digits + "._-")
+
 
 def random_email(length=None, prefix=""):
     if length is None:
         length = random.randint(12, 14)
 
-    if prefix and not prefix.isalnum():
-        raise ValueError("email_prefix 只能包含字母和数字")
+    if prefix and any(char not in EMAIL_PREFIX_CHARS for char in prefix):
+        raise ValueError("email_prefix 只能包含字母、数字、点、下划线或连字符")
 
     first_char = random.choice(string.ascii_lowercase)
 
