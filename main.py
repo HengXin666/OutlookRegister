@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import sys
 from get_token import get_access_token
 from concurrent.futures import ThreadPoolExecutor
 from utils import random_email, generate_strong_password
@@ -90,6 +91,7 @@ def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100):
             time.sleep(0.5)
 
     print(f"\n[Result] - 共: {max_tasks}, 成功 {succeeded_tasks}, 失败 {failed_tasks}")
+    return succeeded_tasks, failed_tasks
 
 
 if __name__ == "__main__":
@@ -109,6 +111,10 @@ if __name__ == "__main__":
         print("不支持的浏览器类型，填写patchright或者playwright")
 
     try:
-        run_concurrent_flows(selected_controller, concurrent_flows, max_tasks)
+        succeeded_tasks, _ = run_concurrent_flows(
+            selected_controller, concurrent_flows, max_tasks
+        )
+        if succeeded_tasks == 0:
+            sys.exit(1)
     finally:
         selected_controller.clean_up(type="all_browser")
