@@ -39,7 +39,32 @@ jobs:
         run: |
           test -n "$PROXY_SUBSCRIPTION_URL"
           mkdir -p proxy
-          curl -fsSL "$PROXY_SUBSCRIPTION_URL" -o proxy/config.yaml
+          curl -fsSL https://github.com/tindy2013/subconverter/releases/download/v0.9.0/subconverter_linux64.tar.gz -o proxy/subconverter.tar.gz
+          tar -xzf proxy/subconverter.tar.gz -C proxy
+          ./proxy/subconverter/subconverter > proxy/subconverter.log 2>&1 &
+          echo $! > proxy/subconverter.pid
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:25500/version >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$(cat proxy/subconverter.pid)" 2>/dev/null; then
+              cat proxy/subconverter.log
+              exit 1
+            fi
+            sleep 1
+          done
+          uv run python - <<'PY'
+          from pathlib import Path
+          from urllib.parse import quote
+          import os
+          import requests
+
+          url = os.environ["PROXY_SUBSCRIPTION_URL"]
+          convert_url = "http://127.0.0.1:25500/sub?target=clash&url=" + quote(url, safe="")
+          response = requests.get(convert_url, timeout=60)
+          response.raise_for_status()
+          Path("proxy/config.yaml").write_bytes(response.content)
+          PY
           uv run python - <<'PY'
           from pathlib import Path
           import yaml
