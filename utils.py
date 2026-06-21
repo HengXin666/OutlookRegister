@@ -2,7 +2,13 @@ import random
 import string
 import secrets
 
-def random_email(length=random.randint(12,14)):
+
+def random_email(length=None, prefix=""):
+    if length is None:
+        length = random.randint(12, 14)
+
+    if prefix and not prefix.isalnum():
+        raise ValueError("email_prefix 只能包含字母和数字")
 
     first_char = random.choice(string.ascii_lowercase)
 
@@ -13,9 +19,16 @@ def random_email(length=random.randint(12,14)):
         else: 
             other_chars.append(random.choice(string.ascii_lowercase))
 
-    return first_char + ''.join(other_chars)
+    email = first_char + ''.join(other_chars)
+    if not prefix:
+        return email
 
-def generate_strong_password(length=random.randint(11, 15)):
+    return prefix + email[len(prefix):]
+
+
+def generate_strong_password(length=None):
+    if length is None:
+        length = random.randint(11, 15)
 
     chars = string.ascii_letters + string.digits + "!@#$%^&*"
 
