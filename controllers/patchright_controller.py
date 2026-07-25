@@ -46,7 +46,7 @@ class PatchrightController(BaseBrowserController):
                 try:
                     # 简单的认为加载8秒后成功，暂不考虑请求.
                     page.locator('[role="status"][aria-label="正在加载..."]').wait_for(timeout=5000)
-                    page.wait_for_timeout(random.randint(6000, 8500))
+                    page.wait_for_timeout(random.randint(7500, 8500))
                     if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
                         print("[Error: Rate limit] - 正常通过验证码，但当前IP注册频率过快。")
                         return False
