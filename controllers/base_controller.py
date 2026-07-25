@@ -6,6 +6,7 @@ import threading
 from faker import Faker
 from abc import ABC, abstractmethod
 
+
 class BaseBrowserController(ABC):
     """
     所有浏览器通用的接口和共享逻辑
@@ -28,6 +29,81 @@ class BaseBrowserController(ABC):
         os.makedirs(self.results_dir, exist_ok=True)
 
 
+    def get_last_pos(self):
+        """获取当前线程的上一次鼠标位置 (x, y)"""
+        return getattr(self.thread_local, 'last_pos', None)
+
+    def set_last_pos(self, x, y):
+        """设置当前线程的鼠标位置 (x, y)"""
+        self.thread_local.last_pos = (float(x), float(y))
+
+    def reset_last_pos(self):
+        """重置当前线程的坐标历史"""
+        if hasattr(self.thread_local, 'last_pos'):
+            del self.thread_local.last_pos
+
+    def wait_random_ratio(self, page, min_ratio, delta=0.02):
+
+        actual_ratio = random.uniform(min_ratio, min_ratio + delta)
+        page.wait_for_timeout(actual_ratio * self.wait_time)
+
+    def smooth_move_to(self, page, target_x, target_y, steps=None):
+        """从上一次坐标滑动到目标坐标"""
+        last_pos = self.get_last_pos()
+        if not last_pos:
+            last_pos = (random.uniform(150, 450), random.uniform(100, 350))
+            try:
+                page.mouse.move(last_pos[0], last_pos[1])
+            except Exception:
+                pass
+
+        if steps is None:
+            steps = random.randint(6, 14)
+
+        try:
+            page.mouse.move(target_x, target_y, steps=steps)
+        except Exception:
+            pass
+
+        self.set_last_pos(target_x, target_y)
+
+    def smooth_click(self, page, locator, offset_range=5, click_delay_range=(60, 160)):
+        """点击方法"""
+        try:
+            box = locator.bounding_box()
+            if not box:
+                locator.click()
+                return False
+
+            tx = box['x'] + box['width'] / 2 + random.uniform(-offset_range, offset_range)
+            ty = box['y'] + box['height'] / 2 + random.uniform(-offset_range, offset_range)
+
+            self.smooth_move_to(page, tx, ty)
+
+            pause_ms = random.randint(click_delay_range[0], click_delay_range[1])
+            page.wait_for_timeout(pause_ms)
+
+            page.mouse.click(tx, ty)
+            self.set_last_pos(tx, ty)
+            return True
+        except Exception:
+            try:
+                locator.click()
+            except Exception:
+                pass
+            return False
+
+    def smooth_type(self, page, locator, text, click_first=True):
+        """输入方法"""
+        if click_first:
+            self.smooth_click(page, locator)
+
+        for char in text:
+            try:
+                locator.type(char, delay=random.randint(40, 110))
+            except Exception:
+                break
+
     @abstractmethod
     def launch_browser(self):
         """
@@ -43,7 +119,7 @@ class BaseBrowserController(ABC):
         pass
 
     @abstractmethod 
-    def clean_up(self, page=None, type = "all_browser"):
+    def clean_up(self, page=None, type="all_browser"):
         """
         清理自己创建的内容
         一个是单进程结束后关闭进程，另一个是程序结束后清除所有内容
@@ -56,15 +132,12 @@ class BaseBrowserController(ABC):
         返回页面
         """
 
-
     def get_thread_browser(self):
         """
         通用逻辑:获取不同进程的浏览器
         """
-
-        if not hasattr(self.thread_local,"browser"):
-
-            p, b  = self.launch_browser()
+        if not hasattr(self.thread_local, "browser"):
+            p, b = self.launch_browser()
             if not p:
                 return False
 
@@ -81,6 +154,7 @@ class BaseBrowserController(ABC):
         通用逻辑:注册邮箱
         """
 
+        self.reset_last_pos()
         fake = Faker()
 
         lastname = fake.last_name()
@@ -91,52 +165,80 @@ class BaseBrowserController(ABC):
 
         try:
             page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=20000, wait_until="domcontentloaded")
-            page.get_by_text('同意并继续').wait_for(timeout=30000)
+            consent_btn = page.get_by_text('同意并继续')
+            consent_btn.wait_for(timeout=30000)
             start_time = time.time()
-            page.wait_for_timeout(0.1 * self.wait_time)
-            page.get_by_text('同意并继续').click(timeout=30000)
-        except:
+            self.wait_random_ratio(page, 0.06)
+            self.smooth_click(page, consent_btn)
+        except Exception:
             print("[Error: IP] - IP质量不佳，无法进入注册界面。")
             return False
 
         try:
             if self.email_suffix == "@hotmail.com":
-                page.get_by_text("@outlook.com").click(timeout=10000)
-                page.locator(f'[role="option"]:text-is("@hotmail.com")').click()
+                self.wait_random_ratio(page, 0.06)
+                domain_btn = page.get_by_text("@outlook.com")
+                self.smooth_click(page, domain_btn)
+                option_btn = page.locator(f'[role="option"]:text-is("@hotmail.com")')
+                self.smooth_click(page, option_btn)
 
-            page.locator('[aria-label="新建电子邮件"]').type(email, delay=0.006 * self.wait_time, timeout=10000)
-            page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-            page.wait_for_timeout(0.02 * self.wait_time)
-            page.locator('[type="password"]').type(password, delay=0.004 * self.wait_time, timeout=10000)
-            page.wait_for_timeout(0.02 * self.wait_time)
-            page.locator('[data-testid="primaryButton"]').click(timeout=5000)
 
-            page.wait_for_timeout(0.03 * self.wait_time)
-            page.locator('[name="BirthYear"]').fill(year, timeout=10000)
+            email_input = page.locator('[aria-label="新建电子邮件"]')
+            self.smooth_type(page, email_input, email)
 
-            try:
-                page.wait_for_timeout(0.02 * self.wait_time)
-                page.locator('[name="BirthMonth"]').select_option(value=month, timeout=1000)
-                page.wait_for_timeout(0.05 * self.wait_time)
-                page.locator('[name="BirthDay"]').select_option(value=day)
-            except:
-                page.locator('[name="BirthMonth"]').click()
-                page.wait_for_timeout(0.02 * self.wait_time)
-                page.locator(f'[role="option"]:text-is("{month}月")').click()
-                page.wait_for_timeout(0.04 * self.wait_time)
-                page.locator('[name="BirthDay"]').click()
-                page.wait_for_timeout(0.03 * self.wait_time)
-                page.locator(f'[role="option"]:text-is("{day}日")').click()
-                page.locator('[data-testid="primaryButton"]').click(timeout=5000)
+            primary_btn = page.locator('[data-testid="primaryButton"]')
+            self.smooth_click(page, primary_btn)
+            self.wait_random_ratio(page, 0.04)
 
-            page.locator('#lastNameInput').type(lastname, delay=0.002 * self.wait_time, timeout=10000)
-            page.wait_for_timeout(0.02 * self.wait_time)
-            page.locator('#firstNameInput').fill(firstname, timeout=10000)
+            pwd_input = page.locator('[type="password"]')
+            self.smooth_type(page, pwd_input, password)
+            self.wait_random_ratio(page, 0.03)
+            self.smooth_click(page, primary_btn)
+            self.wait_random_ratio(page, 0.03)
+
+            if page.get_by_text("请重试。如果仍然不起作用，请稍后再试。").count() > 0:
+                print("[Error: IP or browser] - 当前IP注册频率过快。检查IP与是否为指纹浏览器并关闭了无头模式。")
+                return False
+
+            year_input = page.locator('[name="BirthYear"]')
+            if year_input.count() > 0:
+                self.smooth_click(page, year_input)
+                year_input.fill(year)
+
+            month_btn = page.locator('[name="BirthMonth"]')
+            self.smooth_click(page, month_btn)
+            self.wait_random_ratio(page, 0.03)
+            m_opt = page.locator(f'[role="option"]:text-is("{month}月")')
+            self.smooth_click(page, m_opt)
+
+            self.wait_random_ratio(page, 0.03)
+            day_btn = page.locator('[name="BirthDay"]')
+            self.smooth_click(page, day_btn)
+            self.wait_random_ratio(page, 0.03)
+
+            d_opt = page.locator(f'[role="option"]:text-is("{day}日")')
+            if d_opt.count() > 0:
+                try:
+                    d_opt.scroll_into_view_if_needed()
+                except Exception:
+                    pass
+            self.smooth_click(page, d_opt)
+
+            self.smooth_click(page, primary_btn)
+
+            lname_input = page.locator('#lastNameInput')
+            lname_input.wait_for(state='visible', timeout=8000)
+            self.smooth_type(page, lname_input, lastname)
+
+            self.wait_random_ratio(page, 0.02)
+            fname_input = page.locator('#firstNameInput')
+            fname_input.wait_for(state='visible', timeout=8000)
+            self.smooth_type(page, fname_input, firstname)
 
             if time.time() - start_time < self.wait_time / 1000:
                 page.wait_for_timeout(self.wait_time - (time.time() - start_time) * 1000)
 
-            page.locator('[data-testid="primaryButton"]').click(timeout=5000)
+            self.smooth_click(page, primary_btn)
             page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached', timeout=22000)
             page.wait_for_timeout(400)
 
@@ -164,9 +266,21 @@ class BaseBrowserController(ABC):
         if not self.enable_oauth2:
             return True
 
+        start_skip_time = time.time()
+        while time.time() - start_skip_time < 20:
+            try:
+                btn_skip = page.get_by_text("暂时跳过")
+                if btn_skip.count() > 0 and btn_skip.is_visible():
+                    self.smooth_click(page, btn_skip)
+                    page.wait_for_timeout(random.randint(1000, 1500))
+                else:
+                    btn_skip.wait_for(timeout=7000)
+            except Exception:
+                break
+
         try:
             page.locator('[aria-label="新邮件"]').wait_for(timeout=32000)
             return True
-        except:
+        except Exception:
             print('[Error: Timeout] - 邮箱未初始化，无法正常收件。')
             return False

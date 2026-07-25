@@ -15,6 +15,7 @@ from controllers.playwright_controller import PlaywrightController
 # 2. 使用 launch_persistent_context 
 # 3. 避免短时间访问
 # 4. 模拟真人轨迹
+# 时区
 
 def process_single_flow(controller):
     page = None
@@ -25,7 +26,7 @@ def process_single_flow(controller):
         email = random_email()
         password = generate_strong_password()
 
-        # 调用 controller 特定的注册方法
+        # 调用 controller 特定的注册方法 
         result = controller.outlook_register(page, email, password)
 
         if result and not controller.enable_oauth2:

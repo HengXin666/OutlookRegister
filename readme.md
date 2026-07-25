@@ -10,7 +10,7 @@ Outlook 注册机
 设置相关：  
 1.playwright使用性较差,如果使用playwright，则需要自行寻找指纹浏览器并填写绝对路径。  
 2.如果使用patchright,且不需要Oauth2，则只需要更改代理地址.  
-3.`Bot_protection_wait`单位为秒，可填0。  
+3.`Bot_protection_wait`单位为秒。  
 4.`client_id`与`redirect_url`可以前往[Azure](https://azure.microsoft.com/zh-cn?OCID=cmmyhidqdn5_brandzone__EFID__)注册获取，不需要Oauth2可留空。  
 5.`client_id`与`redirect_url`格式通常类似于`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`和`http://localhost:8000`。  
 6.`Scopes`按照申请的权限填，不需要Oauth2可留空。  
@@ -24,5 +24,5 @@ Outlook 注册机
 6.`python main.py`。  
 
 注意事项：  
-**IP**与成功率高度正相关，同一IP短时间不宜多次注册。单IP一次五个并发跑一轮短时间基本就不再能使用了.  
+**IP**与成功率高度正相关，同一IP短时间不宜多次注册。
 邮箱自动存储到工作目录的`Results`下。  

@@ -31,45 +31,36 @@ class PatchrightController(BaseBrowserController):
         frame1 = page.frame_locator('iframe[title="验证质询"]')
         frame2 = frame1.frame_locator('iframe[style*="display: block"]')
 
-
         for _ in range(0, self.max_captcha_retries + 1):
 
-            page.wait_for_timeout(200)
+            page.wait_for_timeout(random.randint(250, 450))
             loc = frame2.locator('[aria-label="可访问性挑战"]')
-            box = loc.bounding_box()
-            x = box['x'] + box['width'] / 2 + random.randint(-10, 10)
-            y = box['y'] + box['height'] / 2 + random.randint(-10, 10)
-            page.mouse.click(x, y)
+            self.smooth_click(page, loc)
 
+            page.wait_for_timeout(random.randint(300, 600))
             loc2 = frame2.locator('[aria-label="再次按下"]')
-            box2 = loc2.bounding_box()
-            x = box2['x'] + box2['width'] / 2 + random.randint(-20, 20)
-            y = box2['y'] + box2['height'] / 2 + random.randint(-13, 13)
-            page.mouse.click(x, y)
+            self.smooth_click(page, loc2)
 
             try:
-
-                page.locator('.draw').wait_for(state="detached")
+                page.locator('.draw').wait_for(state="detached", timeout=14000)
                 try:
-
                     # 简单的认为加载8秒后成功，暂不考虑请求.
                     page.locator('[role="status"][aria-label="正在加载..."]').wait_for(timeout=5000)
-                    page.wait_for_timeout(8000)
+                    page.wait_for_timeout(random.randint(6000, 8500))
                     if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
                         print("[Error: Rate limit] - 正常通过验证码，但当前IP注册频率过快。")
                         return False
-                    elif frame2.locator('[aria-label="可访问性挑战"]').count() > 0:
+                    elif frame2.locator('[aria-label="可访问性挑战"]').count() > 0:  
                         continue
                     break
 
-                except:
-
+                except Exception:
                     if page.get_by_text('取消').count() > 0:
                         break
-                    frame1.get_by_text("请再试一次").wait_for(timeout=15000)
+                    frame1.locator(':has-text("请再试一次"), :has-text("Keep going"), :has-text("a few more tries")').first.wait_for(timeout=15000)
                     continue
 
-            except:
+            except Exception:
                 if page.get_by_text('取消').count() > 0:
                      break
                 return False
@@ -96,5 +87,3 @@ class PatchrightController(BaseBrowserController):
                 try:
                     p.stop()
                 except Exception: pass
-
-    
