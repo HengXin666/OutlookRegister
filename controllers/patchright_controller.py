@@ -46,22 +46,32 @@ class PatchrightController(BaseBrowserController):
                 try:
                     # 简单的认为加载8秒后成功，暂不考虑请求.
                     page.locator('[role="status"][aria-label="正在加载..."]').wait_for(timeout=5000)
-                    page.wait_for_timeout(random.randint(7500, 8500))
-                    if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
-                        print("[Error: Rate limit] - 正常通过验证码，但当前IP注册频率过快。")
-                        return False
-                    elif frame2.locator('[aria-label="可访问性挑战"]').count() > 0:  
-                        continue
-                    break
+
+                    captcha_passed = False
+                    for _ in range(20):
+                        if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
+                            print("[Error: Rate limit] - 正常通过验证码，但当前IP注册频率过快。")
+                            return False
+                        elif frame2.locator('[aria-label="可访问性挑战"]').count() > 0:  
+                            captcha_passed = False
+                            page.wait_for_timeout(random.randint(500, 1000))
+                            break
+                        elif page.get_by_text("暂时跳过").count() > 0:
+                            captcha_passed = True
+                            break
+                        page.wait_for_timeout(random.randint(375, 425))
+
+                    if captcha_passed:
+                        break
 
                 except Exception:
-                    if page.get_by_text('取消').count() > 0:
+                    if page.get_by_text('暂时跳过').count() > 0:
                         break
                     frame1.locator(':has-text("请再试一次"), :has-text("Keep going"), :has-text("a few more tries")').first.wait_for(timeout=15000)
                     continue
 
             except Exception:
-                if page.get_by_text('取消').count() > 0:
+                if page.get_by_text('暂时跳过').count() > 0:
                      break
                 return False
         else: 

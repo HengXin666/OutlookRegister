@@ -23,25 +23,26 @@ def generate_code_challenge(code_verifier):
     sha256_hash = hashlib.sha256(code_verifier.encode()).digest()
     return base64.urlsafe_b64encode(sha256_hash).decode().rstrip('=')
 
-def handle_oauth2_form(page, email):
+def handle_oauth2_form(page, email, attempt):
     try:
         page.locator('[name="loginfmt"]').fill(email, timeout=20000)
         page.locator('#idSIButton9').click(timeout=7000)
 
         consent_btn = page.locator('[data-testid="appConsentPrimaryButton"]')
-        consent_btn.wait_for(state='visible', timeout=20000)
+        timeout_val = 2500 if attempt > 0 else 20000
+        consent_btn.wait_for(state='visible', timeout=timeout_val)
         consent_btn.click(timeout=10000)
     except:
         pass
 
 def get_access_token(page, email, max_retries=3):
     for attempt in range(max_retries):
-        result = _try_get_access_token(page, email)
+        result = _try_get_access_token(page, email, attempt)
         if result[0] is not False:
             return result
     return False, False, False
 
-def _try_get_access_token(page, email):
+def _try_get_access_token(page, email, attempt):
     with open('config.json', 'r', encoding='utf-8') as f:
         data = json.load(f)
     SCOPES = data['oauth2']['Scopes']
@@ -80,7 +81,7 @@ def _try_get_access_token(page, email):
         except:
             return False, False, False
 
-        handle_oauth2_form(page, f"{email}{_email_suffix}")
+        handle_oauth2_form(page, f"{email}{_email_suffix}", attempt)
 
         max_refreshes = 1
         refresh_count = 0
