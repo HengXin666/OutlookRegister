@@ -60,6 +60,9 @@ class PatchrightController(BaseBrowserController):
                             captcha_passed = True
                             break
                         page.wait_for_timeout(random.randint(375, 425))
+                    else:
+                        if frame2.locator('[aria-label="可访问性挑战"]').count() == 0:
+                            captcha_passed = True
 
                     if captcha_passed:
                         break
