@@ -1,0 +1,38 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+dashboard/node_modules/
+dashboard/dist/
+
+# 环境配置
+config.toml
+.env
+
+# 输出文件
+accounts.csv
+nvidia_api_key.txt
+captcha_artifacts/
+failure_artifacts/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+Results/
+config.json

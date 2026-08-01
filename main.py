@@ -4,6 +4,7 @@ import json
 from get_token import get_access_token
 from concurrent.futures import ThreadPoolExecutor
 from utils import random_email, generate_strong_password
+from proxy_rotation import ProxyRotationError, RotatingProxyPool
 from controllers.patchright_controller import PatchrightController
 from controllers.playwright_controller import PlaywrightController
 
@@ -17,31 +18,112 @@ from controllers.playwright_controller import PlaywrightController
 # 4. 模拟真人轨迹
 # 时区
 
-def process_single_flow(controller):
+def process_single_flow(controller, proxy_pool=None):
     page = None
+    oauth_page = None
+    proxy_lease = None
+    traffic = getattr(controller, 'traffic', None)
+    traffic_started = False
 
     try:
+        if proxy_pool is not None:
+            # 每个窗口使用同一渠道下的独立服务端会话。
+            proxy_lease = proxy_pool.acquire_proxy()
+            controller.set_proxy(proxy_lease.proxy)
+
         page = controller.get_thread_page()
 
         email = random_email()
         password = generate_strong_password()
+        outlook_email = f'{email}{controller.email_suffix}'
+        if traffic is not None:
+            traffic.start_task(outlook_email)
+            traffic_started = True
+            traffic.attach_page(page, 'residential_registration', 'residential_browser')
 
         # 调用 controller 特定的注册方法 
         result = controller.outlook_register(page, email, password)
+
+        if result and proxy_lease is not None:
+            proxy_pool.switch_after_registration(proxy_lease)
+            print(
+                f"[ProxyRotate] 注册完成，窗口会话 {proxy_lease.session_id} "
+                f"已切换到 {proxy_pool.post_registration_route.upper()}"
+            )
+            if traffic is not None:
+                traffic.set_page_stage(page, 'post_registration', 'post_registration_browser')
 
         if result and not controller.enable_oauth2:
             return True
         elif not result:
             return False
 
-        token_result = get_access_token(page, email)
+        oauth_page = controller.get_oauth_page(page)
+        if not oauth_page:
+            controller._write_account_checkpoint(
+                f"{email}{controller.email_suffix}",
+                password,
+                'oauth_launch_failed',
+                '无法启动 OAuth2 浏览器',
+            )
+            print('[Error: OAuth2] - 无法启动使用默认代理的 OAuth2 浏览器。')
+            return False
+        if traffic is not None:
+            traffic.attach_page(oauth_page, 'oauth_browser', 'oauth_browser')
+        token_result = get_access_token(
+            oauth_page,
+            email,
+            password=password,
+            proxy=controller.proxy,
+            traffic_recorder=traffic,
+        )
         if token_result[0]:
             refresh_token, access_token, expire_at =  token_result
-            with open(os.path.join(os.path.dirname(__file__), 'Results', 'outlook_token.txt'), 'a', encoding='utf-8') as f2:
-                f2.write(f"{email}{controller.email_suffix}---{password}---{refresh_token}---{access_token}---{expire_at}\n") 
+            with controller.results_lock:
+                with open(os.path.join(os.path.dirname(__file__), 'Results', 'outlook_token.txt'), 'a', encoding='utf-8') as f2:
+                    f2.write(f"{email}{controller.email_suffix}---{password}---{refresh_token}---{access_token}---{expire_at}\n")
+            controller._write_account_checkpoint(
+                f"{email}{controller.email_suffix}",
+                password,
+                'oauth_success',
+                'OAuth2 token 已保存到 outlook_token.txt',
+            )
             print(f'[Success: TokenAuth] - {email}{controller.email_suffix}')
+            try:
+                imported = controller.hx_email.import_outlook_account(
+                    email=f"{email}{controller.email_suffix}",
+                    password=password,
+                    recovery_email=controller.get_recovery_email(),
+                    client_id=controller.oauth_client_id,
+                    refresh_token=refresh_token,
+                    proxy_url=controller.proxy,
+                )
+            except Exception as exc:
+                controller._write_account_checkpoint(
+                    f"{email}{controller.email_suffix}",
+                    password,
+                    'hx_email_import_failed',
+                    str(exc),
+                )
+                raise
+            print(
+                '[Success: HX-Email Import] - '
+                f'account_id={imported["account_id"]}, group_id={imported["group_id"]}'
+            )
+            controller._write_account_checkpoint(
+                f"{email}{controller.email_suffix}",
+                password,
+                'hx_email_imported',
+                f'account_id={imported["account_id"]}, group_id={imported["group_id"]}',
+            )
             return True
         else:
+            controller._write_account_checkpoint(
+                f"{email}{controller.email_suffix}",
+                password,
+                'oauth_failed',
+                'OAuth2 token 获取失败，基础账号凭证已保留',
+            )
             return False
 
     except Exception as e:
@@ -50,9 +132,17 @@ def process_single_flow(controller):
     
     finally:
 
+        if oauth_page is not None:
+            controller.clean_up(oauth_page, "done_browser")
         controller.clean_up(page, "done_browser")
+        if proxy_pool is not None:
+            controller.close_thread_browser()
+            controller.set_proxy(None)
+            proxy_pool.release(proxy_lease)
+        if traffic_started:
+            traffic.finish_task()
 
-def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100):
+def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100, proxy_pool=None):
     task_counter = 0
     succeeded_tasks = 0
     failed_tasks = 0
@@ -74,7 +164,7 @@ def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100):
                 running_futures.remove(future)
 
             while len(running_futures) < concurrent_flows and task_counter < max_tasks:
-                new_future = executor.submit(process_single_flow, controller)
+                new_future = executor.submit(process_single_flow, controller, proxy_pool)
                 running_futures.add(new_future)
                 task_counter += 1
                 if max_tasks > 1 and task_counter % (max_tasks // 2) == 0:
@@ -96,6 +186,16 @@ if __name__ == "__main__":
     max_tasks = data["max_tasks"]
     concurrent_flows = data["concurrent_flows"]
 
+    proxy_pool = None
+    proxy_rotation_cfg = data.get("proxy_rotation") or {}
+    if proxy_rotation_cfg.get("enabled"):
+        try:
+            proxy_pool = RotatingProxyPool(proxy_rotation_cfg)
+            print(f"[ProxyRotate] 已启用 HX-ProxyGroup 住宅代理轮换, 共 {len(proxy_pool.entries)} 个渠道 token")
+        except ProxyRotationError as e:
+            print(f"[ProxyRotate] 配置错误: {e}")
+            exit(1)
+
     if data["choose_browser"] =="patchright":
         selected_controller = PatchrightController()
     elif data["choose_browser"] =="playwright":
@@ -105,6 +205,6 @@ if __name__ == "__main__":
   
 
     try:
-        run_concurrent_flows(selected_controller, concurrent_flows, max_tasks)
+        run_concurrent_flows(selected_controller, concurrent_flows, max_tasks, proxy_pool)
     finally:
         selected_controller.clean_up(type="all_browser")

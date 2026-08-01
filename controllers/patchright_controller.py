@@ -1,18 +1,16 @@
 import random
 from patchright.sync_api import sync_playwright
-from .base_controller import BaseBrowserController
+from .base_controller import BaseBrowserController, build_browser_proxy_settings
 
 
 class PatchrightController(BaseBrowserController):
 
-    def launch_browser(self):
+    def launch_browser(self, proxy=None, playwright=None):
         try:
-            p = sync_playwright().start() 
+            p = playwright or sync_playwright().start()
 
-            proxy_settings = {
-                "server": self.proxy,
-                "bypass": "localhost",
-            } if self.proxy else None
+            selected_proxy = proxy if proxy is not None else self.get_proxy()
+            proxy_settings = build_browser_proxy_settings(selected_proxy)
 
             b = p.chromium.launch(
                 headless=False,            

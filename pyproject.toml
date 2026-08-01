@@ -1,0 +1,14 @@
+[project]
+name = "outlookregister"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115.0",
+    "faker>=40.36.0",
+    "patchright>=1.61.2",
+    "playwright>=1.62.0",
+    "requests>=2.34.2",
+    "uvicorn[standard]>=0.34.0",
+]

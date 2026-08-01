@@ -2,9 +2,37 @@ import os
 import time
 import json
 import random
+import re
 import threading
+from urllib.parse import unquote, urlsplit, urlunsplit
 from faker import Faker
 from abc import ABC, abstractmethod
+from hx_email_client import HXEmailClient, HXEmailError
+from traffic_tracker import TrafficRecorder
+
+
+def build_browser_proxy_settings(proxy):
+    """Convert a proxy URL into Playwright's server/credential fields."""
+    proxy = str(proxy or "").strip()
+    if not proxy:
+        return None
+    parsed = urlsplit(proxy)
+    if not parsed.scheme or not parsed.hostname:
+        return {"server": proxy, "bypass": "localhost"}
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    settings = {
+        "server": urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment)),
+        "bypass": "localhost",
+    }
+    if parsed.username is not None:
+        settings["username"] = unquote(parsed.username)
+    if parsed.password is not None:
+        settings["password"] = unquote(parsed.password)
+    return settings
 
 
 class BaseBrowserController(ABC):
@@ -20,14 +48,30 @@ class BaseBrowserController(ABC):
         self.enable_oauth2 = data["oauth2"]['enable_oauth2']
         self.proxy = data['proxy']
         self.email_suffix = data['email_suffix']
+        self.results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Results')
+        os.makedirs(self.results_dir, exist_ok=True)
+        self.recovery_email_config = data.get('recovery_email') or {}
+        self.recovery_email_enabled = bool(self.recovery_email_config.get('enabled', False))
+        self.recovery_code_attempts = max(
+            1, int(self.recovery_email_config.get('max_code_attempts', 2))
+        )
+        self.hx_email = HXEmailClient(self.recovery_email_config.get('hx_email') or {})
+        self.traffic = TrafficRecorder(self.results_dir)
+        self.hx_email.set_traffic_recorder(self.traffic)
+        self.oauth_client_id = data['oauth2']['client_id']
 
         self.thread_local = threading.local()
         self.cleanup_lock = threading.Lock()
+        self.results_lock = threading.Lock()
         self.active_resources = []  # 记录资源以便关闭
 
-        self.results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Results')
-        os.makedirs(self.results_dir, exist_ok=True)
+    def set_proxy(self, proxy):
+        """设置当前线程使用的代理地址(支持每个注册流程使用不同的住宅代理)。"""
+        self.thread_local.proxy = proxy
 
+    def get_proxy(self):
+        """返回当前线程的代理地址,未设置时回退到 config.json 的静态 proxy。"""
+        return getattr(self.thread_local, 'proxy', None) or self.proxy
 
     def get_last_pos(self):
         """获取当前线程的上一次鼠标位置 (x, y)"""
@@ -105,7 +149,7 @@ class BaseBrowserController(ABC):
                 break
 
     @abstractmethod
-    def launch_browser(self):
+    def launch_browser(self, proxy=None, playwright=None):
         """
         获取浏览器实例,返回playwright_instance, browser_instance
         """
@@ -149,12 +193,402 @@ class BaseBrowserController(ABC):
 
         return self.thread_local.browser
 
+    def get_oauth_page(self, source_page):
+        """Copy the signed-in session to a browser using the static default proxy."""
+        shared_playwright = getattr(self.thread_local, 'playwright', None)
+        p, browser = self.launch_browser(
+            proxy=self.proxy,
+            playwright=shared_playwright,
+        )
+        if not p:
+            return False
+        with self.cleanup_lock:
+            self.active_resources.append((None, browser))
+        context = browser.new_context()
+        try:
+            cookies = source_page.context.cookies()
+            if cookies:
+                context.add_cookies(cookies)
+        except Exception:
+            context.close()
+            browser.close()
+            raise
+        return context.new_page()
+
+    def close_thread_browser(self):
+        """Close the registration browser so a rotated proxy applies next time."""
+        browser = getattr(self.thread_local, 'browser', None)
+        playwright = getattr(self.thread_local, 'playwright', None)
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+        for attribute in ('browser', 'playwright'):
+            if hasattr(self.thread_local, attribute):
+                delattr(self.thread_local, attribute)
+
+    def _visible_first(self, page, selectors):
+        for selector in selectors:
+            try:
+                locator = page.locator(selector).first
+                if locator.count() and locator.is_visible():
+                    return locator
+            except Exception:
+                pass
+        return None
+
+    def _recovery_page_visible(self, page):
+        try:
+            url = (page.url or '').lower()
+            body = ' '.join(page.locator('body').inner_text(timeout=3000).split()).lower()
+        except Exception:
+            return False
+        markers = (
+            'protect your account', 'recovery email', 'alternate email',
+            'add an email address', 'security info',
+            'adresse e-mail de récupération', 'correo de recuperación',
+            'wiederherstellungs-e-mail', 'email de recuperação',
+            'email di recupero', 'herstel-e-mailadres',
+            '辅助邮箱', '恢复邮箱', '备用邮箱', '添加电子邮件',
+            '让我们来保护你的帐户', '保护你的帐户',
+            '協助我們保護您的帳戶', '復原電子郵件', '備用電子郵件',
+            '回復用メール', '복구 이메일',
+        )
+        return '/proofs/add' in url or any(marker in body for marker in markers)
+
+    def _recovery_code_input(self, page):
+        return self._visible_first(page, (
+            '#iOttText', 'input[autocomplete="one-time-code"]',
+            'input[name="otc"]', 'input[name="VerificationCode"]',
+            'input[name="ProofConfirmation"]', 'input[name="code"]',
+            'input[inputmode="numeric"]', 'input[aria-label*="code" i]',
+            'input[aria-label*="代码"]', 'input[placeholder*="code" i]',
+            'input[placeholder*="代码"]',
+        ))
+
+    def _wait_for_recovery_page(self, page, timeout_seconds=5):
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if self._recovery_page_visible(page):
+                return True
+            if self._visible_first(page, (
+                '[aria-label="新邮件"]', '[aria-label="New mail"]',
+                '[aria-label="新郵件"]',
+            )) is not None:
+                return False
+            page.wait_for_timeout(500)
+        return self._recovery_page_visible(page)
+
+    def _recovery_error(self, page):
+        try:
+            body = ' '.join(page.locator('body').inner_text(timeout=3000).split()).lower()
+        except Exception:
+            return ''
+        markers = (
+            "that code didn't work", 'code is incorrect', 'incorrect code',
+            'invalid code', 'code has expired', 'code expired',
+            'enter the code again',
+            '该代码不起作用', '代码不正确', '验证码不正确', '验证码错误',
+            '代码已过期', '验证码已过期', '请重新输入',
+            '此代碼無效', '驗證碼不正確', '驗證碼錯誤', '代碼已過期',
+        )
+        return next((marker for marker in markers if marker in body), '')
+
+    def _wait_for_recovery_confirmation(self, page, timeout_seconds=20):
+        """Return only after Microsoft clearly accepts or rejects the submitted code."""
+        deadline = time.time() + timeout_seconds
+        departed_since = None
+        while time.time() < deadline:
+            error = self._recovery_error(page)
+            if error:
+                return False, f'Microsoft 提示安全代码错误（{error}）'
+
+            code_input = self._recovery_code_input(page)
+            try:
+                still_on_proof = '/proofs/add' in (page.url or '').lower()
+            except Exception:
+                still_on_proof = True
+            if code_input is not None or still_on_proof:
+                departed_since = None
+            else:
+                # Require a stable departure so a transient re-render is not treated as success.
+                departed_since = departed_since or time.time()
+                if time.time() - departed_since >= 1:
+                    return True, ''
+            page.wait_for_timeout(500)
+        return False, 'Microsoft 未确认备用邮箱安全代码，验证码页面仍未正常离开'
+
+    def _resend_recovery_code(self, page):
+        resend = self._visible_first(page, (
+            'button:has-text("Resend code")', 'button:has-text("Send a new code")',
+            'button:has-text("重新发送代码")', 'button:has-text("发送新代码")',
+            'button:has-text("重寄代碼")', 'a:has-text("Resend code")',
+            'a:has-text("重新发送代码")',
+        ))
+        if resend is None:
+            return False
+        self.smooth_click(page, resend)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if not self._recovery_error(page):
+                return True
+            page.wait_for_timeout(500)
+        return False
+
+    def _set_recovery_result(self, bound=False, recovery_email='', reason='not_requested', detail=''):
+        self.thread_local.recovery_result = {
+            'bound': bool(bound),
+            'recovery_email': recovery_email,
+            'reason': reason,
+            'detail': detail,
+        }
+
+    def _write_recovery_result(self, outlook_email):
+        result = getattr(self.thread_local, 'recovery_result', None) or {
+            'bound': False,
+            'recovery_email': '',
+            'reason': 'not_requested',
+            'detail': '',
+        }
+        record = {
+            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+            'outlook_email': outlook_email,
+            **result,
+        }
+        path = os.path.join(self.results_dir, 'recovery_email_status.jsonl')
+        with self.results_lock:
+            with open(path, 'a', encoding='utf-8') as status_file:
+                status_file.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+    def _write_account_checkpoint(self, outlook_email, password, stage, detail=''):
+        record = {
+            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+            'outlook_email': outlook_email,
+            'password': password,
+            'stage': stage,
+            'detail': detail,
+        }
+        path = os.path.join(self.results_dir, 'account_checkpoints.jsonl')
+        with self.results_lock:
+            with open(path, 'a', encoding='utf-8') as checkpoint_file:
+                checkpoint_file.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+    def _save_registered_credentials(self, outlook_email, password, evidence):
+        """Persist a created account once; later recovery/OAuth failures never remove it."""
+        if getattr(self.thread_local, 'credentials_saved', False):
+            return False
+        filename = os.path.join(
+            self.results_dir,
+            'logged_email.txt' if self.enable_oauth2 else 'unlogged_email.txt',
+        )
+        with self.results_lock:
+            with open(filename, 'a', encoding='utf-8') as credentials_file:
+                credentials_file.write(f'{outlook_email}: {password}\n')
+        self.thread_local.credentials_saved = True
+        self._write_account_checkpoint(
+            outlook_email,
+            password,
+            'registered',
+            evidence,
+        )
+        print(f'[Saved: Account Credentials] - {outlook_email}: {password}')
+        return True
+
+    def _account_created_visible(self, page):
+        """Use post-signup controls and URLs as evidence that Microsoft created the account."""
+        if self._recovery_page_visible(page):
+            return True
+        if self._visible_first(page, (
+            '[aria-label="新邮件"]', '[aria-label="New mail"]',
+            '[aria-label="新郵件"]',
+        )) is not None:
+            return True
+        if self._visible_first(page, (
+            '#iShowSkip', '#idBtn_Skip', '#skipBtn',
+            'button:has-text("暂时跳过")', 'button:has-text("Skip for now")',
+            'button:has-text("Not now")', 'button:has-text("稍后再说")',
+            'button:has-text("暫時略過")', 'a:has-text("Skip for now")',
+        )) is not None:
+            return True
+        try:
+            url = (page.url or '').lower()
+        except Exception:
+            url = ''
+        return (
+            '/proofs/add' in url
+            or ('outlook.live.com/mail/' in url and 'prompt=create_account' not in url)
+        )
+
+    def _wait_for_account_created(self, page, timeout_seconds=8):
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if self._account_created_visible(page):
+                return True
+            page.wait_for_timeout(500)
+        return self._account_created_visible(page)
+
+    def _save_recovery_diagnostic(self, page, name):
+        stamp = int(time.time())
+        base_path = os.path.join(self.results_dir, f'{name}_{stamp}')
+        try:
+            page.screenshot(path=f'{base_path}.png', full_page=True)
+        except Exception:
+            pass
+        try:
+            body = page.locator('body').inner_text(timeout=3000)
+            inputs = page.locator('input').evaluate_all(
+                "els => els.map(el => ({id: el.id, name: el.name, type: el.type, "
+                "placeholder: el.placeholder, ariaLabel: el.getAttribute('aria-label')}))"
+            )
+            with open(f'{base_path}.txt', 'w', encoding='utf-8') as diagnostic:
+                diagnostic.write(f'URL: {page.url}\nINPUTS: {inputs}\n\n{body}')
+            print(f'[Recovery Email] - 页面诊断已保存: {base_path}.png/.txt')
+        except Exception:
+            pass
+
+    def handle_recovery_email(self, page):
+        """Enroll an HX-Email temp address when Microsoft requires a recovery email."""
+        self._set_traffic_page_stage(page, 'recovery_email', 'recovery_browser')
+        if not self._wait_for_recovery_page(page):
+            self._set_recovery_result()
+            self._set_traffic_page_stage(page, 'residential_registration', 'residential_browser')
+            return True
+        if not self.recovery_email_enabled:
+            self._set_recovery_result(reason='disabled', detail='recovery_email 未启用')
+            print('[Error: Recovery Email] - Microsoft 要求备用邮箱，但 recovery_email 未启用。')
+            self._set_traffic_page_stage(page, 'residential_registration', 'residential_browser')
+            return False
+
+        self._set_recovery_result(
+            reason='binding_failed',
+            detail='已检测到密保邮箱页面，但尚未完成绑定',
+        )
+        mailbox = None
+        success = False
+        detail = ''
+        try:
+            mailbox = self.hx_email.apply_mailbox()
+            recovery_email = mailbox.get('email')
+            if not recovery_email:
+                raise HXEmailError('HX-Email 未返回临时邮箱地址')
+            self._set_recovery_result(
+                recovery_email=recovery_email,
+                reason='verification_failed',
+                detail='尚未通过 Microsoft 验证',
+            )
+
+            email_input = self._visible_first(page, (
+                'input[type="email"]', 'input[name="EmailAddress"]',
+                'input[name="proof"]', 'input[placeholder*="example.com" i]',
+            ))
+            if email_input is None:
+                raise HXEmailError('未找到 Microsoft 备用邮箱输入框')
+            email_input.fill(recovery_email)
+
+            submit = self._visible_first(page, (
+                '[data-testid="primaryButton"]', '#idSIButton9', '#iNext',
+                'button[type="submit"]', 'input[type="submit"]',
+            ))
+            if submit is None:
+                raise HXEmailError('未找到 Microsoft 备用邮箱提交按钮')
+            self.smooth_click(page, submit)
+
+            code_input = None
+            deadline = time.time() + 30
+            while time.time() < deadline and code_input is None:
+                code_input = self._recovery_code_input(page)
+                if code_input is None:
+                    page.wait_for_timeout(500)
+            if code_input is None:
+                self._save_recovery_diagnostic(page, 'recovery_email_submit_failed')
+                raise HXEmailError('Microsoft 未进入备用邮箱安全代码页面')
+
+            print(f'[Recovery Email] - 安全代码已发送至 {recovery_email}')
+            used_codes = set()
+            for attempt in range(1, self.recovery_code_attempts + 1):
+                code = str(self.hx_email.wait_for_code(mailbox, set(used_codes))).strip()
+                if not re.fullmatch(r'\d{6}', code):
+                    raise HXEmailError(f'HX-Email 返回的安全代码格式无效: {code!r}')
+                used_codes.add(code)
+
+                code_input = self._recovery_code_input(page)
+                if code_input is None:
+                    raise HXEmailError('Microsoft 安全代码输入框已消失，但绑定尚未确认')
+                code_input.fill(code)
+                submit = self._visible_first(page, (
+                    '[data-testid="primaryButton"]', '#idSIButton9', '#iNext',
+                    'button[type="submit"]', 'input[type="submit"]',
+                ))
+                if submit is None:
+                    raise HXEmailError('未找到 Microsoft 安全代码确认按钮')
+                self.smooth_click(page, submit)
+                page.wait_for_timeout(750)
+
+                accepted, verification_detail = self._wait_for_recovery_confirmation(page)
+                if accepted:
+                    break
+                if attempt >= self.recovery_code_attempts or not self._resend_recovery_code(page):
+                    self._save_recovery_diagnostic(page, 'recovery_email_code_rejected')
+                    raise HXEmailError(verification_detail)
+                print(
+                    f'[Recovery Email] - 第 {attempt} 个安全代码未通过，'
+                    '已请求新代码，旧代码不会再次使用。'
+                )
+
+            success = True
+            self.thread_local.recovery_email = recovery_email
+            self._set_recovery_result(
+                bound=True,
+                recovery_email=recovery_email,
+                reason='verified',
+            )
+            print(f'[Success: Recovery Email] - {recovery_email}')
+            return True
+        except Exception as exc:
+            detail = str(exc)
+            current = getattr(self.thread_local, 'recovery_result', {})
+            self._set_recovery_result(
+                recovery_email=current.get('recovery_email', ''),
+                reason=current.get('reason', 'verification_failed'),
+                detail=detail,
+            )
+            print(f'[Error: Recovery Email] - {detail}')
+            return False
+        finally:
+            if mailbox:
+                self.hx_email.finish_mailbox(mailbox, success, detail)
+            self._set_traffic_page_stage(page, 'residential_registration', 'residential_browser')
+
+    def _set_traffic_page_stage(self, page, stage, source):
+        traffic = getattr(self, 'traffic', None)
+        if traffic is not None:
+            traffic.set_page_stage(page, stage, source)
+
+    def get_recovery_email(self):
+        return getattr(self.thread_local, 'recovery_email', '')
+
     def outlook_register(self, page, email, password):
         """
         通用逻辑:注册邮箱
         """
 
         self.reset_last_pos()
+        self.thread_local.recovery_email = ''
+        self.thread_local.credentials_saved = False
+        self._set_recovery_result()
+        outlook_email = f'{email}{self.email_suffix}'
+        self._write_account_checkpoint(
+            outlook_email,
+            password,
+            'generated',
+            '账号密码已生成，尚未确认 Microsoft 注册结果',
+        )
         fake = Faker()
 
         lastname = fake.last_name()
@@ -170,7 +604,13 @@ class BaseBrowserController(ABC):
             start_time = time.time()
             self.wait_random_ratio(page, 0.06)
             self.smooth_click(page, consent_btn)
-        except Exception:
+        except Exception as exc:
+            self._write_account_checkpoint(
+                outlook_email,
+                password,
+                'navigation_failed',
+                str(exc),
+            )
             print("[Error: IP] - IP质量不佳，无法进入注册界面。")
             return False
 
@@ -197,6 +637,10 @@ class BaseBrowserController(ABC):
             self.wait_random_ratio(page, 0.03)
 
             if page.get_by_text("请重试。如果仍然不起作用，请稍后再试。").count() > 0:
+                self._write_account_checkpoint(
+                    outlook_email, password, 'registration_rejected',
+                    'Microsoft 提示请稍后重试',
+                )
                 print("[Error: IP or browser] - 当前IP注册频率过快。检查IP与是否为指纹浏览器并关闭了无头模式。")
                 return False
 
@@ -239,36 +683,125 @@ class BaseBrowserController(ABC):
                 page.wait_for_timeout(self.wait_time - (time.time() - start_time) * 1000)
 
             self.smooth_click(page, primary_btn)
+            self._write_account_checkpoint(
+                outlook_email,
+                password,
+                'profile_submitted',
+                '姓名资料已提交，等待按压验证及 Microsoft 创建结果',
+            )
             page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached', timeout=22000)
             page.wait_for_timeout(400)
 
             if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
+                self._write_account_checkpoint(
+                    outlook_email, password, 'registration_rejected',
+                    'Microsoft 提示异常活动或站点维护',
+                )
                 print("[Error: IP or browser] - 当前IP注册频率过快。检查IP与是否为指纹浏览器并关闭了无头模式。")
                 return False
 
             if page.locator('iframe#enforcementFrame').count() > 0:
+                self._write_account_checkpoint(
+                    outlook_email, password, 'captcha_unsupported',
+                    '出现 FunCaptcha，当前流程仅支持按压验证码',
+                )
                 print("[Error: FunCaptcha] - 验证码类型错误，非按压验证码。")
                 return False
 
-            captcha_result = self.handle_captcha(page)
-            if not captcha_result:
-                raise TimeoutError
+            captcha_error = ''
+            try:
+                captcha_result = self.handle_captcha(page)
+            except Exception as exc:
+                captcha_result = False
+                captcha_error = str(exc)
 
-        except Exception:
-            print("[Error: IP] - 加载超时或因触发机器人检测导致按压次数达到最大仍未通过。")
+            if not captcha_result:
+                if not self._wait_for_account_created(page):
+                    detail = captcha_error or '按压次数用尽，且未发现账号创建成功的页面证据'
+                    self._write_account_checkpoint(
+                        outlook_email,
+                        password,
+                        'registration_unconfirmed',
+                        detail,
+                    )
+                    print(f'[Error: Captcha] - {detail}')
+                    return False
+                print(
+                    '[Warning: Captcha Result] - 按压处理返回失败，但页面已进入注册后阶段，'
+                    '按账号注册成功继续处理。'
+                )
+                creation_evidence = 'captcha_returned_false_but_post_signup_page_visible'
+            else:
+                creation_evidence = 'captcha_handler_completed'
+
+            self._save_registered_credentials(
+                outlook_email,
+                password,
+                creation_evidence,
+            )
+
+            page.wait_for_timeout(1000)
+            if not self.handle_recovery_email(page):
+                recovery_detail = getattr(
+                    self.thread_local, 'recovery_result', {}
+                ).get('detail', '')
+                self._write_account_checkpoint(
+                    outlook_email,
+                    password,
+                    'recovery_failed',
+                    recovery_detail,
+                )
+                self._write_recovery_result(outlook_email)
+                return False
+
+        except Exception as exc:
+            if (
+                not self.thread_local.credentials_saved
+                and self._account_created_visible(page)
+            ):
+                self._save_registered_credentials(
+                    outlook_email,
+                    password,
+                    'exception_but_post_signup_page_visible',
+                )
+            stage = (
+                'post_registration_failed'
+                if self.thread_local.credentials_saved
+                else 'registration_unconfirmed'
+            )
+            self._write_account_checkpoint(outlook_email, password, stage, str(exc))
+            print(f'[Error: Registration Flow] - {exc}')
             return False
 
-        filename = os.path.join(self.results_dir, 'logged_email.txt' if self.enable_oauth2 else 'unlogged_email.txt')
-        with open(filename, 'a', encoding='utf-8') as f:
-            f.write(f"{email}{self.email_suffix}: {password}\n")
-        print(f'[Success: Email Registration] - {email}{self.email_suffix}: {password}')
+        # Idempotent fallback for future controller implementations that reach here directly.
+        self._save_registered_credentials(
+            outlook_email,
+            password,
+            'registration_flow_completed',
+        )
+        print(f'[Success: Email Registration] - {outlook_email}: {password}')
 
         if not self.enable_oauth2:
+            self._write_recovery_result(outlook_email)
             return True
 
         start_skip_time = time.time()
         while time.time() - start_skip_time < 20:
             try:
+                if self._recovery_page_visible(page):
+                    if not self.handle_recovery_email(page):
+                        recovery_detail = getattr(
+                            self.thread_local, 'recovery_result', {}
+                        ).get('detail', '')
+                        self._write_account_checkpoint(
+                            outlook_email,
+                            password,
+                            'recovery_failed',
+                            recovery_detail,
+                        )
+                        self._write_recovery_result(outlook_email)
+                        return False
+                    continue
                 btn_skip = page.get_by_text("暂时跳过")
                 if btn_skip.count() > 0 and btn_skip.is_visible():
                     self.smooth_click(page, btn_skip)
@@ -284,3 +817,5 @@ class BaseBrowserController(ABC):
         except Exception:
             print('[Error: Timeout] - 邮箱未初始化，无法正常收件。')
             return False
+        finally:
+            self._write_recovery_result(outlook_email)

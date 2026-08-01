@@ -1,0 +1,59 @@
+# OutlookRegister  
+
+Outlook 注册机  
+选择器经常更新，不保证时效性，自行测试。 
+
+- 模拟人类填表操作  
+- 自动过验证码  
+- 注册成功  
+
+设置相关：  
+1.playwright使用性较差,如果使用playwright，则需要自行寻找指纹浏览器并填写绝对路径。  
+2.如果使用patchright,且不需要Oauth2，则只需要更改代理地址.  
+3.`Bot_protection_wait`单位为秒。  
+4.`client_id`与`redirect_url`可以前往[Azure](https://azure.microsoft.com/zh-cn?OCID=cmmyhidqdn5_brandzone__EFID__)注册获取，不需要Oauth2可留空。  
+5.`client_id`与`redirect_url`格式通常类似于`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`和`http://localhost:8000`。  
+6.`Scopes`按照申请的权限填，不需要Oauth2可留空。  
+
+使用教程：  
+1.使用本地代理IP**搭建代理池**，在`config.json`填写你的代理地址。  
+2.在设置中调整并发与最大注册量。  
+3.如果你需要Oauth2，请在`config.json`中修改`"enable_oauth2"`的值为`true`并填写`Scopes`、`client_id`与`redirect_url`。  
+4.安装相关依赖`pip install -r requirements.txt`，如果未安装相关浏览器，使用`patchright install chromium`。  
+5.视运行脚本填写或留空`browser_path`。  
+6.`python main.py`。  
+
+HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
+1. 启动 HX-ProxyGroup（`./run.sh`，默认控制面 `http://127.0.0.1:19090`），登录后左侧边栏进入「住宅代理」。
+2. 「供应商」页：先创建住宅代理供应商——BestProxy 预设已内置官方语法，或选择「API 提取」模式直接填 BestProxy 提取链接（`https://bestproxy.com/api/v2/<提取ID>?app_key=...`，无需账号密码）。保存后用「测试连接」确认能取到出口 IP。
+3. 「渠道」页：为该供应商创建渠道。要支持「每个会话固定 IP、换会话才换 IP」请选 **sticky** 模式；选 passthrough 则透传给上游自行轮换。渠道会生成 listener 入口地址（HTTP/SOCKS5，可带账密）与公共轮换地址 `POST /rot/<token>/next`，页面可一键复制。
+4. 在`config.json`的`proxy_rotation`中填写`base_url`（控制面地址）与`tokens`，每个渠道一组`{"token": "...", "proxy": "http://用户:密码@主机:端口"}`，token 与入口地址从渠道详情复制。
+5. 将`"enabled"`和`"session_scoped"`设为`true`。每个窗口会调用`PUT /rot/<token>/sessions/<session_id>`申请独立住宅出口；旧模式`session_scoped=false`才会调用全局`POST /rot/<token>/next`。
+6. 一个渠道 token 和一个 Listener 端口即可承载多个并行窗口。客户端会为每个窗口创建独立`session_id`和代理账号，不需要按`concurrent_flows`重复创建渠道。
+7. 关闭`proxy_rotation`（`"enabled": false`）时仍使用`config.json`中的静态`proxy`。
+8. 可选开启`check_proxy`：每次换 IP 后先通过该代理请求`exit_ip_endpoint`回显接口确认可用，检查失败会自动换下一个渠道。
+
+顶层`proxy`只用于 OAuth2 浏览器和 token 交换，不用于注册住宅会话。填写廉价代理即可；设为`""`时使用本机直连。不要再把它配置成住宅渠道 Listener，否则 OAuth 阶段仍会消耗住宅流量。
+
+并行会话与切流说明：每个注册线程调用`PUT /rot/<token>/sessions/<session_id>`取得独立代理账号，在同一个端口上通过`IN-USER`路由到不同住宅 IP。注册完成后程序调用会话`route`接口并关闭该会话的旧住宅连接；浏览器页面、Cookie 和进程保持不变。`post_registration_route=upstream`使用住宅供应商配置的普通上游代理组，适合服务器不能物理直连或需要廉价代理的环境；`direct`才表示 HX-ProxyGroup 服务器物理出口。`pool_size`至少应等于住宅并发数，建议四并发配置为 8，以预留轮换槽位。
+
+备用邮箱与 OAuth2：
+1. 在 `recovery_email.hx_email` 中配置 HX-Email 地址及认证信息。推荐同时配置 `api_key`、`username`、`password`；也可通过 `HX_EMAIL_API_KEY`、`HX_EMAIL_USERNAME`、`HX_EMAIL_PASSWORD` 环境变量提供，避免把凭据写入文件。
+2. Microsoft 出现「让我们来保护你的帐户」时，程序会从 HX-Email 申请临时邮箱、等待六位安全码并自动确认。验证码被拒绝时会请求新代码，且不会复用错误代码；`max_code_attempts` 控制最多提交次数。成功或失败后会结束临时邮箱任务；具备登录凭据时同时归档邮箱。
+3. 当前 HX-Email 的通用外部验证码接口尚不能读取独立临时邮箱，因此仅配置 API Key 时需先在 HX-Email 补齐该接口；配置用户名和密码后，本程序会自动回退到 `/api/v1/temp-mail/{id}/codes`。
+4. 注册浏览器继续使用住宅代理；OAuth2 授权浏览器及 token 交换固定使用顶层 `proxy`，不会继承住宅代理。
+5. Graph 收发信必须使用 HX-Email 相同的 OAuth2 配置：`tenant=consumers`、`prompt=consent`，scope 为 `offline_access Mail.Read Mail.Send`。scope 变化后必须重新授权，旧 refresh token 不会自动获得权限。
+6. 每个完成注册或已进入密保绑定步骤的账号都会追加到 `Results/recovery_email_status.jsonl`。`bound=true` 表示验证码已被 Microsoft 明确接受；`bound=false` 时通过 `reason` 和 `detail` 区分未触发、未启用及验证码失败。
+7. 账号密码生成后会立即写入 `Results/account_checkpoints.jsonl`，并在资料提交、确认注册、密保失败等阶段持续追加检查点。确认账号已创建后，账号密码会立刻写入原有的 `logged_email.txt` 或 `unlogged_email.txt`；之后即使密保、邮箱初始化、OAuth2 或导入失败，也不会丢失基础账号凭证。
+
+注意事项：  
+**IP**与成功率高度正相关，同一IP短时间不宜多次注册。
+邮箱自动存储到工作目录的`Results`下。  
+
+任务状态面板：
+1. 首次构建前端：`cd dashboard && npm install && npm run build`。
+2. 在项目根目录启动面板：`uv run uvicorn dashboard_server:app --host 127.0.0.1 --port 8765`。
+3. 浏览器打开 `http://127.0.0.1:8765/`，可查看四个完成状态、账号筛选、阶段耗时和平均耗时。
+4. 新增的 `Results/traffic_usage.jsonl` 会按住宅注册、注册后初始化、密保验证、OAuth 和 HX-Email API 记录观测流量；历史检查点没有流量字段，需重新运行任务后才会显示。
+
+流量是程序观测到的网络字节，不等同于代理供应商账单流量；浏览器优先使用 CDP 统计响应字节，不支持时会使用响应头估算。
