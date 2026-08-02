@@ -9,12 +9,17 @@ dashboard/dist/
 # 环境配置
 config.toml
 .env
+.env.*
+!.env.example
+config.json
+config.local.json
 
 # 输出文件
 accounts.csv
 nvidia_api_key.txt
 captcha_artifacts/
 failure_artifacts/
+Results/
 
 # Python
 __pycache__/
@@ -33,6 +38,3 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
-
-Results/
-config.json

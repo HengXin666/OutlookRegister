@@ -2,6 +2,9 @@
     "choose_browser": "patchright",
     "email_suffix": "@outlook.com",
     "proxy": "",
+    "strict_isolation": true,
+    "isolate_hx_email_group": true,
+    "prevent_direct_network_leaks": true,
     "bot_protection_wait": 16,
     "max_captcha_retries": 16,
     "concurrent_flows": 3,
@@ -26,15 +29,18 @@
         "max_code_attempts": 2,
         "hx_email": {
             "base_url": "http://localhost:5173/api/v1",
-            "api_key": "Authorization: Bearer xxx",
-            "username": "admin",
-            "password": "admin",
+            "api_key": "",
+            "username": "",
+            "password": "",
             "request_timeout_seconds": 15,
             "code_timeout_seconds": 120,
             "poll_interval_seconds": 3,
+            "code_timestamp_skew_seconds": 15,
+            "code_max_age_seconds": 300,
             "caller_id": "outlook-register",
             "account_group": "OutlookRegister 自动注册",
-            "account_group_color": "#238636"
+            "account_group_color": "#238636",
+            "proxy_url": ""
         }
     },
     "proxy_rotation": {
@@ -43,13 +49,15 @@
         "timeout_seconds": 10,
         "max_rotate_retries": 6,
         "session_scoped": true,
-        "post_registration_route": "upstream",
+        "post_registration_route": "direct",
         "check_proxy": true,
+        "enforce_unique_exit_ip": true,
+        "verify_browser_exit_ip": true,
         "exit_ip_endpoint": "https://api.ipify.org?format=json",
         "tokens": [
             {
                 "token": "",
-                "proxy": "http://127.0.0.1:7890"
+                "proxy": ""
             }
         ]
     },

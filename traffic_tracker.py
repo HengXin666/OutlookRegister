@@ -22,13 +22,30 @@ class TrafficRecorder:
         self._pages: dict[int, dict[str, Any]] = {}
         self._pages_lock = threading.Lock()
 
-    def start_task(self, outlook_email: str) -> None:
+    def start_task(
+        self,
+        outlook_email: str,
+        *,
+        flow_id: str = "",
+        proxy_session_id: str = "",
+        proxy_exit_ip: str = "",
+        worker_id: str = "",
+    ) -> None:
         self._local.email = str(outlook_email or "").strip()
+        self._local.flow_id = str(flow_id or "").strip()
+        self._local.proxy_session_id = str(proxy_session_id or "").strip()
+        self._local.proxy_exit_ip = str(proxy_exit_ip or "").strip()
+        self._local.worker_id = str(worker_id or "").strip()
+        self._local.captcha_attempts = 0
         self._local.started_at = datetime.now(timezone.utc)
         self._local.buckets = defaultdict(lambda: {"bytes": 0, "bytes_sent": 0, "bytes_received": 0, "estimated": False})
 
     def has_task(self) -> bool:
         return bool(getattr(self._local, "email", "")) and hasattr(self._local, "buckets")
+
+    def set_captcha_attempts(self, attempts: int) -> None:
+        if self.has_task():
+            self._local.captcha_attempts = max(int(attempts or 0), 0)
 
     @contextmanager
     def stage(self, stage: str, source: str) -> Iterator[None]:
@@ -141,6 +158,26 @@ class TrafficRecorder:
                 if source:
                     state["source"] = source
 
+    def detach_page(self, page: Any) -> None:
+        page_id = id(page)
+        with self._pages_lock:
+            state = self._pages.pop(page_id, None)
+        if state is None:
+            return
+
+        fallback_handler = state.get("fallback_handler")
+        if fallback_handler is not None:
+            try:
+                page.remove_listener("response", fallback_handler)
+            except Exception:
+                pass
+        cdp = state.get("cdp")
+        if cdp is not None:
+            try:
+                cdp.detach()
+            except Exception:
+                pass
+
     def finish_task(self) -> None:
         if not self.has_task():
             return
@@ -163,6 +200,11 @@ class TrafficRecorder:
                     "bytes_received": bucket["bytes_received"],
                     "estimated": bucket["estimated"],
                     "task_started_at": started_at.isoformat() if started_at else None,
+                    "flow_id": getattr(self._local, "flow_id", ""),
+                    "proxy_session_id": getattr(self._local, "proxy_session_id", ""),
+                    "proxy_exit_ip": getattr(self._local, "proxy_exit_ip", ""),
+                    "worker_id": getattr(self._local, "worker_id", ""),
+                    "captcha_attempts": getattr(self._local, "captcha_attempts", 0),
                 }
             )
         if records:
@@ -171,7 +213,18 @@ class TrafficRecorder:
                 with self.path.open("a", encoding="utf-8") as traffic_file:
                     for record in records:
                         traffic_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-        for attribute in ("email", "started_at", "buckets", "stage", "source"):
+        for attribute in (
+            "email",
+            "flow_id",
+            "proxy_session_id",
+            "proxy_exit_ip",
+            "worker_id",
+            "captcha_attempts",
+            "started_at",
+            "buckets",
+            "stage",
+            "source",
+        ):
             if hasattr(self._local, attribute):
                 delattr(self._local, attribute)
 

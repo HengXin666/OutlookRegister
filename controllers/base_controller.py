@@ -4,6 +4,7 @@ import json
 import random
 import re
 import threading
+from datetime import datetime, timezone
 from urllib.parse import unquote, urlsplit, urlunsplit
 from faker import Faker
 from abc import ABC, abstractmethod
@@ -18,7 +19,7 @@ def build_browser_proxy_settings(proxy):
         return None
     parsed = urlsplit(proxy)
     if not parsed.scheme or not parsed.hostname:
-        return {"server": proxy, "bypass": "localhost"}
+        return {"server": proxy, "bypass": "localhost,127.0.0.1,[::1]"}
     host = parsed.hostname
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
@@ -26,7 +27,7 @@ def build_browser_proxy_settings(proxy):
         host = f"{host}:{parsed.port}"
     settings = {
         "server": urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment)),
-        "bypass": "localhost",
+        "bypass": "localhost,127.0.0.1,[::1]",
     }
     if parsed.username is not None:
         settings["username"] = unquote(parsed.username)
@@ -47,11 +48,21 @@ class BaseBrowserController(ABC):
         self.max_captcha_retries = data['max_captcha_retries']
         self.enable_oauth2 = data["oauth2"]['enable_oauth2']
         self.proxy = data['proxy']
+        self.strict_isolation = bool(data.get('strict_isolation', True))
+        self.isolate_hx_email_group = bool(
+            data.get('isolate_hx_email_group', self.strict_isolation)
+        )
+        self.prevent_direct_network_leaks = bool(
+            data.get('prevent_direct_network_leaks', True)
+        )
         self.email_suffix = data['email_suffix']
         self.results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Results')
         os.makedirs(self.results_dir, exist_ok=True)
         self.recovery_email_config = data.get('recovery_email') or {}
         self.recovery_email_enabled = bool(self.recovery_email_config.get('enabled', False))
+        self.hx_email_proxy_url = str(
+            (self.recovery_email_config.get('hx_email') or {}).get('proxy_url', '')
+        ).strip()
         self.recovery_code_attempts = max(
             1, int(self.recovery_email_config.get('max_code_attempts', 2))
         )
@@ -64,14 +75,109 @@ class BaseBrowserController(ABC):
         self.cleanup_lock = threading.Lock()
         self.results_lock = threading.Lock()
         self.active_resources = []  # 记录资源以便关闭
+        self.oauth_browsers = {}
 
     def set_proxy(self, proxy):
         """设置当前线程使用的代理地址(支持每个注册流程使用不同的住宅代理)。"""
-        self.thread_local.proxy = proxy
+        normalized = str(proxy or '').strip()
+        if normalized:
+            self.thread_local.proxy = normalized
+        elif hasattr(self.thread_local, 'proxy'):
+            delattr(self.thread_local, 'proxy')
+
+    def set_flow_context(
+        self,
+        flow_id,
+        proxy_session_id="",
+        proxy_exit_ip="",
+        worker_id="",
+    ):
+        self.thread_local.flow_id = str(flow_id or "")
+        self.thread_local.proxy_session_id = str(proxy_session_id or "")
+        self.thread_local.proxy_exit_ip = str(proxy_exit_ip or "")
+        self.thread_local.worker_id = str(worker_id or "")
+
+        previous_client = getattr(self.thread_local, 'hx_email', None)
+        if previous_client is not None:
+            try:
+                previous_client.close()
+            except Exception:
+                pass
+
+        hx_email_config = dict(self.recovery_email_config.get('hx_email') or {})
+        if self.isolate_hx_email_group:
+            base_group = str(
+                hx_email_config.get('account_group', 'OutlookRegister 自动注册')
+            ).strip()
+            hx_email_config['account_group'] = f'{base_group} [{self.thread_local.flow_id}]'
+        flow_client = HXEmailClient(hx_email_config)
+        flow_client.set_traffic_recorder(getattr(self, 'traffic', None))
+        self.thread_local.hx_email = flow_client
+
+    def get_flow_hx_email(self):
+        return getattr(self.thread_local, 'hx_email', self.hx_email)
+
+    def clear_flow_context(self):
+        for attribute in (
+            "flow_id",
+            "proxy_session_id",
+            "proxy_exit_ip",
+            "worker_id",
+            "captcha_attempts",
+            "proxy",
+            "last_pos",
+            "recovery_email",
+            "recovery_mailbox",
+            "credentials_saved",
+            "recovery_result",
+        ):
+            if hasattr(self.thread_local, attribute):
+                delattr(self.thread_local, attribute)
+        flow_client = getattr(self.thread_local, 'hx_email', None)
+        if flow_client is not None:
+            try:
+                flow_client.close()
+            except Exception:
+                pass
+            delattr(self.thread_local, 'hx_email')
+
+    def record_captcha_attempt(self):
+        attempts = getattr(self.thread_local, 'captcha_attempts', 0) + 1
+        self.thread_local.captcha_attempts = attempts
+        traffic = getattr(self, 'traffic', None)
+        if traffic is not None:
+            traffic.set_captcha_attempts(attempts)
+        record = {
+            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+            'flow_id': getattr(self.thread_local, 'flow_id', ''),
+            'proxy_session_id': getattr(self.thread_local, 'proxy_session_id', ''),
+            'proxy_exit_ip': getattr(self.thread_local, 'proxy_exit_ip', ''),
+            'worker_id': getattr(self.thread_local, 'worker_id', ''),
+            'attempt': attempts,
+        }
+        path = os.path.join(self.results_dir, 'captcha_attempts.jsonl')
+        try:
+            with self.results_lock:
+                with open(path, 'a', encoding='utf-8') as attempts_file:
+                    attempts_file.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except OSError as exc:
+            print(f'[Captcha] 尝试记录失败: {exc}')
+        return attempts
 
     def get_proxy(self):
         """返回当前线程的代理地址,未设置时回退到 config.json 的静态 proxy。"""
         return getattr(self.thread_local, 'proxy', None) or self.proxy
+
+    def browser_launch_args(self):
+        args = ['--lang=zh-CN']
+        if self.prevent_direct_network_leaks:
+            args.extend(
+                (
+                    '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+                    '--disable-quic',
+                )
+            )
+        return args
 
     def get_last_pos(self):
         """获取当前线程的上一次鼠标位置 (x, y)"""
@@ -193,27 +299,110 @@ class BaseBrowserController(ABC):
 
         return self.thread_local.browser
 
-    def get_oauth_page(self, source_page):
-        """Copy the signed-in session to a browser using the static default proxy."""
+    def get_oauth_page(self, source_page, proxy=None):
+        """Copy the signed-in session while preserving the current flow proxy."""
+        selected_proxy = self.get_proxy() if proxy is None else proxy
         shared_playwright = getattr(self.thread_local, 'playwright', None)
         p, browser = self.launch_browser(
-            proxy=self.proxy,
+            proxy=selected_proxy,
             playwright=shared_playwright,
         )
         if not p:
             return False
+        owned_playwright = None if shared_playwright is not None else p
         with self.cleanup_lock:
-            self.active_resources.append((None, browser))
-        context = browser.new_context()
+            self.active_resources.append((owned_playwright, browser))
+        context = None
         try:
+            context = browser.new_context()
             cookies = source_page.context.cookies()
             if cookies:
                 context.add_cookies(cookies)
+            page = context.new_page()
+            with self.cleanup_lock:
+                self.oauth_browsers[id(page)] = (owned_playwright, browser)
+            return page
         except Exception:
-            context.close()
-            browser.close()
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            try:
+                browser.close()
+            except Exception:
+                pass
+            if owned_playwright is not None:
+                try:
+                    owned_playwright.stop()
+                except Exception:
+                    pass
+            with self.cleanup_lock:
+                self.active_resources = [
+                    (resource_p, b)
+                    for resource_p, b in self.active_resources
+                    if b is not browser
+                ]
             raise
-        return context.new_page()
+
+    def close_page_context(self, page):
+        """Close a page context and its dedicated OAuth browser, if any."""
+        if page is None:
+            return
+        try:
+            context = page.context
+        except Exception:
+            context = None
+        with self.cleanup_lock:
+            resource = self.oauth_browsers.pop(id(page), None)
+        if isinstance(resource, tuple):
+            playwright, browser = resource
+        else:
+            playwright, browser = None, resource
+        traffic = getattr(self, 'traffic', None)
+        if traffic is not None:
+            try:
+                traffic.detach_page(page)
+            except Exception:
+                pass
+        try:
+            if context is not None:
+                context.close()
+        except Exception:
+            pass
+        finally:
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                with self.cleanup_lock:
+                    self.active_resources = [
+                        (p, b)
+                        for p, b in self.active_resources
+                        if b is not browser
+                    ]
+            if playwright is not None:
+                try:
+                    playwright.stop()
+                except Exception:
+                    pass
+
+    def close_all_resources(self):
+        with self.cleanup_lock:
+            resources = list(self.active_resources)
+            self.active_resources.clear()
+            self.oauth_browsers.clear()
+        for playwright, browser in resources:
+            try:
+                browser.close()
+            except Exception:
+                pass
+            if playwright is not None:
+                try:
+                    playwright.stop()
+                except Exception:
+                    pass
 
     def close_thread_browser(self):
         """Close the registration browser so a rotated proxy applies next time."""
@@ -224,6 +413,10 @@ class BaseBrowserController(ABC):
                 browser.close()
             except Exception:
                 pass
+            with self.cleanup_lock:
+                self.active_resources = [
+                    (p, b) for p, b in self.active_resources if b is not browser
+                ]
         if playwright is not None:
             try:
                 playwright.stop()
@@ -264,7 +457,8 @@ class BaseBrowserController(ABC):
 
     def _recovery_code_input(self, page):
         return self._visible_first(page, (
-            '#iOttText', 'input[autocomplete="one-time-code"]',
+            'input[id^="codeEntry-"]', '#iOttText',
+            'input[autocomplete="one-time-code"]',
             'input[name="otc"]', 'input[name="VerificationCode"]',
             'input[name="ProofConfirmation"]', 'input[name="code"]',
             'input[inputmode="numeric"]', 'input[aria-label*="code" i]',
@@ -333,20 +527,31 @@ class BaseBrowserController(ABC):
         ))
         if resend is None:
             return False
+        requested_at = datetime.now(timezone.utc)
         self.smooth_click(page, resend)
         deadline = time.time() + 5
         while time.time() < deadline:
             if not self._recovery_error(page):
-                return True
+                return requested_at
             page.wait_for_timeout(500)
         return False
 
-    def _set_recovery_result(self, bound=False, recovery_email='', reason='not_requested', detail=''):
+    def _set_recovery_result(
+        self,
+        bound=False,
+        recovery_email='',
+        reason='not_requested',
+        detail='',
+        usable_email_id=None,
+        mailbox_mode='',
+    ):
         self.thread_local.recovery_result = {
             'bound': bool(bound),
             'recovery_email': recovery_email,
             'reason': reason,
             'detail': detail,
+            'usable_email_id': usable_email_id,
+            'mailbox_mode': mailbox_mode,
         }
 
     def _write_recovery_result(self, outlook_email):
@@ -359,6 +564,11 @@ class BaseBrowserController(ABC):
         record = {
             'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
             'outlook_email': outlook_email,
+            'flow_id': getattr(self.thread_local, 'flow_id', ''),
+            'proxy_session_id': getattr(self.thread_local, 'proxy_session_id', ''),
+            'proxy_exit_ip': getattr(self.thread_local, 'proxy_exit_ip', ''),
+            'worker_id': getattr(self.thread_local, 'worker_id', ''),
+            'captcha_attempts': getattr(self.thread_local, 'captcha_attempts', 0),
             **result,
         }
         path = os.path.join(self.results_dir, 'recovery_email_status.jsonl')
@@ -373,6 +583,11 @@ class BaseBrowserController(ABC):
             'password': password,
             'stage': stage,
             'detail': detail,
+            'flow_id': getattr(self.thread_local, 'flow_id', ''),
+            'proxy_session_id': getattr(self.thread_local, 'proxy_session_id', ''),
+            'proxy_exit_ip': getattr(self.thread_local, 'proxy_exit_ip', ''),
+            'worker_id': getattr(self.thread_local, 'worker_id', ''),
+            'captcha_attempts': getattr(self.thread_local, 'captcha_attempts', 0),
         }
         path = os.path.join(self.results_dir, 'account_checkpoints.jsonl')
         with self.results_lock:
@@ -452,6 +667,192 @@ class BaseBrowserController(ABC):
         except Exception:
             pass
 
+    def _fill_recovery_code(self, page, code):
+        """Fill either Microsoft's single OTP field or its segmented six-field UI."""
+        try:
+            segmented = page.locator('input[id^="codeEntry-"]')
+            visible_inputs = [
+                segmented.nth(index)
+                for index in range(segmented.count())
+                if segmented.nth(index).is_visible()
+            ]
+        except Exception:
+            visible_inputs = []
+        if len(visible_inputs) >= len(code):
+            for input_box in visible_inputs:
+                try:
+                    input_box.fill('')
+                except Exception:
+                    pass
+            self.smooth_click(page, visible_inputs[0])
+            page.keyboard.type(code, delay=120)
+            return True
+
+        code_input = self._recovery_code_input(page)
+        if code_input is None:
+            raise HXEmailError('Microsoft 安全代码输入框已消失，但验证尚未确认')
+        code_input.fill(code)
+        return False
+
+    def confirm_recovery_email_challenge(
+        self,
+        page,
+        hx_email,
+        mailbox,
+        recovery_email,
+    ):
+        """Confirm an existing recovery address using the shared Microsoft proof flow."""
+        code_requested_at = datetime.now(timezone.utc)
+        known_message_ids = None
+        known_codes = None
+        if isinstance(hx_email, HXEmailClient):
+            try:
+                known_candidates = hx_email.code_snapshot(mailbox)
+                known_message_ids = {
+                    str(candidate.get('message_id') or '').strip()
+                    for candidate in known_candidates
+                    if str(candidate.get('message_id') or '').strip()
+                }
+                known_codes = {
+                    str(candidate.get('code') or '').strip()
+                    for candidate in known_candidates
+                    if str(candidate.get('code') or '').strip()
+                }
+                print(
+                    f'[Recovery Code] 发送前已有验证码消息: '
+                    f'{len(known_message_ids)} 条',
+                    flush=True,
+                )
+            except HXEmailError as exc:
+                print(
+                    f'[Recovery Code] 无法建立发送前消息基线，将拒绝无时间戳的旧验证码: {exc}',
+                    flush=True,
+                )
+        email_input = self._visible_first(page, (
+            '#proof-confirmation-email-input',
+            'input[name="proofConfirmationEmail"]',
+            'input[data-testid="proof-confirmation-email-input"]',
+            'input[type="email"]', 'input[name="EmailAddress"]',
+            'input[name="proof"]', 'input[placeholder*="example.com" i]',
+        ))
+        if email_input is not None:
+            email_input.fill(recovery_email)
+            submit = self._visible_first(page, (
+                '[data-testid="primaryButton"]', '#idSIButton9', '#iNext',
+                'button[type="submit"]', 'input[type="submit"]',
+            ))
+            if submit is None:
+                raise HXEmailError('未找到 Microsoft 备用邮箱提交按钮')
+            self.smooth_click(page, submit)
+
+        code_input = None
+        deadline = time.time() + 30
+        while time.time() < deadline and code_input is None:
+            code_input = self._recovery_code_input(page)
+            if code_input is None:
+                page.wait_for_timeout(500)
+        if code_input is None:
+            self._save_recovery_diagnostic(page, 'recovery_email_submit_failed')
+            raise HXEmailError('Microsoft 未进入备用邮箱安全代码页面')
+
+        print(
+            f'[Recovery Code] 等待新验证码: mailbox={recovery_email}; '
+            f'发送基线={code_requested_at.isoformat()}',
+            flush=True,
+        )
+        used_codes = set()
+        for attempt in range(1, self.recovery_code_attempts + 1):
+            if isinstance(hx_email, HXEmailClient):
+                code_details = hx_email.wait_for_code_details(
+                    mailbox,
+                    set(used_codes),
+                    not_before=code_requested_at,
+                    known_message_ids=known_message_ids,
+                    known_codes=known_codes,
+                )
+                code = str(code_details.get('code') or '').strip()
+                message_id = str(code_details.get('message_id') or '').strip()
+                if message_id:
+                    if known_message_ids is None:
+                        known_message_ids = set()
+                    known_message_ids.add(message_id)
+                if known_codes is None:
+                    known_codes = set()
+                known_codes.add(code)
+            else:
+                # Keep lightweight test doubles and third-party compatible
+                # clients working while the built-in client enforces timestamps.
+                code = str(hx_email.wait_for_code(mailbox, set(used_codes))).strip()
+                code_details = {
+                    'code': code,
+                    'received_at': None,
+                    'message_id': '',
+                }
+            if not re.fullmatch(r'\d{6}', code):
+                raise HXEmailError(f'HX-Email 返回的安全代码格式无效: {code!r}')
+            used_codes.add(code)
+            if not isinstance(hx_email, HXEmailClient):
+                print(
+                    f'[Recovery Code] 使用验证码: code={code}; '
+                    f'received_at={code_details.get("received_at") or "unknown"}; '
+                    f'message_id={code_details.get("message_id") or "unknown"}; '
+                    f'mailbox={recovery_email}',
+                    flush=True,
+                )
+
+            segmented = self._fill_recovery_code(page, code)
+            submit = self._visible_first(page, (
+                '[data-testid="primaryButton"]', '#idSIButton9', '#iNext',
+                'button[type="submit"]', 'input[type="submit"]',
+            ))
+            if submit is not None:
+                self.smooth_click(page, submit)
+            elif not segmented:
+                raise HXEmailError('未找到 Microsoft 安全代码确认按钮')
+            page.wait_for_timeout(750)
+
+            accepted, verification_detail = self._wait_for_recovery_confirmation(page)
+            if accepted:
+                return True
+            if attempt >= self.recovery_code_attempts:
+                self._save_recovery_diagnostic(page, 'recovery_email_code_rejected')
+                raise HXEmailError(verification_detail)
+            if isinstance(hx_email, HXEmailClient):
+                try:
+                    known_candidates = hx_email.code_snapshot(mailbox)
+                    known_message_ids = {
+                        str(candidate.get('message_id') or '').strip()
+                        for candidate in known_candidates
+                        if str(candidate.get('message_id') or '').strip()
+                    }
+                    known_codes = {
+                        str(candidate.get('code') or '').strip()
+                        for candidate in known_candidates
+                        if str(candidate.get('code') or '').strip()
+                    }
+                except HXEmailError as exc:
+                    known_message_ids = None
+                    known_codes = None
+                    print(
+                        f'[Recovery Code] 无法建立重发前消息基线，将拒绝无时间戳的旧验证码: {exc}',
+                        flush=True,
+                    )
+            resend_result = self._resend_recovery_code(page)
+            if not resend_result:
+                self._save_recovery_diagnostic(page, 'recovery_email_code_rejected')
+                raise HXEmailError(verification_detail)
+            code_requested_at = (
+                resend_result
+                if isinstance(resend_result, datetime)
+                else datetime.now(timezone.utc)
+            )
+            print(
+                f'[Recovery Email] - 第 {attempt} 个安全代码未通过，'
+                f'已请求新代码（发送基线={code_requested_at.isoformat()}），'
+                '旧代码不会再次使用。'
+            )
+        return False
+
     def handle_recovery_email(self, page):
         """Enroll an HX-Email temp address when Microsoft requires a recovery email."""
         self._set_traffic_page_stage(page, 'recovery_email', 'recovery_browser')
@@ -473,7 +874,8 @@ class BaseBrowserController(ABC):
         success = False
         detail = ''
         try:
-            mailbox = self.hx_email.apply_mailbox()
+            hx_email = self.get_flow_hx_email()
+            mailbox = hx_email.apply_mailbox()
             recovery_email = mailbox.get('email')
             if not recovery_email:
                 raise HXEmailError('HX-Email 未返回临时邮箱地址')
@@ -481,65 +883,17 @@ class BaseBrowserController(ABC):
                 recovery_email=recovery_email,
                 reason='verification_failed',
                 detail='尚未通过 Microsoft 验证',
+                usable_email_id=mailbox.get('usable_email_id'),
+                mailbox_mode=mailbox.get('mode', ''),
             )
+            self.thread_local.recovery_mailbox = dict(mailbox)
 
-            email_input = self._visible_first(page, (
-                'input[type="email"]', 'input[name="EmailAddress"]',
-                'input[name="proof"]', 'input[placeholder*="example.com" i]',
-            ))
-            if email_input is None:
-                raise HXEmailError('未找到 Microsoft 备用邮箱输入框')
-            email_input.fill(recovery_email)
-
-            submit = self._visible_first(page, (
-                '[data-testid="primaryButton"]', '#idSIButton9', '#iNext',
-                'button[type="submit"]', 'input[type="submit"]',
-            ))
-            if submit is None:
-                raise HXEmailError('未找到 Microsoft 备用邮箱提交按钮')
-            self.smooth_click(page, submit)
-
-            code_input = None
-            deadline = time.time() + 30
-            while time.time() < deadline and code_input is None:
-                code_input = self._recovery_code_input(page)
-                if code_input is None:
-                    page.wait_for_timeout(500)
-            if code_input is None:
-                self._save_recovery_diagnostic(page, 'recovery_email_submit_failed')
-                raise HXEmailError('Microsoft 未进入备用邮箱安全代码页面')
-
-            print(f'[Recovery Email] - 安全代码已发送至 {recovery_email}')
-            used_codes = set()
-            for attempt in range(1, self.recovery_code_attempts + 1):
-                code = str(self.hx_email.wait_for_code(mailbox, set(used_codes))).strip()
-                if not re.fullmatch(r'\d{6}', code):
-                    raise HXEmailError(f'HX-Email 返回的安全代码格式无效: {code!r}')
-                used_codes.add(code)
-
-                code_input = self._recovery_code_input(page)
-                if code_input is None:
-                    raise HXEmailError('Microsoft 安全代码输入框已消失，但绑定尚未确认')
-                code_input.fill(code)
-                submit = self._visible_first(page, (
-                    '[data-testid="primaryButton"]', '#idSIButton9', '#iNext',
-                    'button[type="submit"]', 'input[type="submit"]',
-                ))
-                if submit is None:
-                    raise HXEmailError('未找到 Microsoft 安全代码确认按钮')
-                self.smooth_click(page, submit)
-                page.wait_for_timeout(750)
-
-                accepted, verification_detail = self._wait_for_recovery_confirmation(page)
-                if accepted:
-                    break
-                if attempt >= self.recovery_code_attempts or not self._resend_recovery_code(page):
-                    self._save_recovery_diagnostic(page, 'recovery_email_code_rejected')
-                    raise HXEmailError(verification_detail)
-                print(
-                    f'[Recovery Email] - 第 {attempt} 个安全代码未通过，'
-                    '已请求新代码，旧代码不会再次使用。'
-                )
+            self.confirm_recovery_email_challenge(
+                page,
+                hx_email,
+                mailbox,
+                recovery_email,
+            )
 
             success = True
             self.thread_local.recovery_email = recovery_email
@@ -547,6 +901,8 @@ class BaseBrowserController(ABC):
                 bound=True,
                 recovery_email=recovery_email,
                 reason='verified',
+                usable_email_id=mailbox.get('usable_email_id'),
+                mailbox_mode=mailbox.get('mode', ''),
             )
             print(f'[Success: Recovery Email] - {recovery_email}')
             return True
@@ -557,12 +913,14 @@ class BaseBrowserController(ABC):
                 recovery_email=current.get('recovery_email', ''),
                 reason=current.get('reason', 'verification_failed'),
                 detail=detail,
+                usable_email_id=current.get('usable_email_id'),
+                mailbox_mode=current.get('mailbox_mode', ''),
             )
             print(f'[Error: Recovery Email] - {detail}')
             return False
         finally:
             if mailbox:
-                self.hx_email.finish_mailbox(mailbox, success, detail)
+                self.get_flow_hx_email().finish_mailbox(mailbox, success, detail)
             self._set_traffic_page_stage(page, 'residential_registration', 'residential_browser')
 
     def _set_traffic_page_stage(self, page, stage, source):
@@ -573,6 +931,9 @@ class BaseBrowserController(ABC):
     def get_recovery_email(self):
         return getattr(self.thread_local, 'recovery_email', '')
 
+    def get_recovery_mailbox(self):
+        return getattr(self.thread_local, 'recovery_mailbox', None)
+
     def outlook_register(self, page, email, password):
         """
         通用逻辑:注册邮箱
@@ -581,6 +942,7 @@ class BaseBrowserController(ABC):
         self.reset_last_pos()
         self.thread_local.recovery_email = ''
         self.thread_local.credentials_saved = False
+        self.thread_local.captcha_attempts = 0
         self._set_recovery_result()
         outlook_email = f'{email}{self.email_suffix}'
         self._write_account_checkpoint(

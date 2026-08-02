@@ -11,8 +11,10 @@ import {
   ExternalLink,
   Gauge,
   HardDriveDownload,
+  KeyRound,
   ListFilter,
   LoaderCircle,
+  Mail,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -30,6 +32,15 @@ type FilterKey = "all" | "complete" | "incomplete" | "failed"
 
 type StageState = { ok: boolean; at: string | null }
 type TrafficMetric = { key: string; label: string; bytes: number; human: string; estimated?: boolean }
+type AccountActionName = "authorize" | "import_hx_email"
+type AccountActionState = {
+  email: string
+  action: AccountActionName
+  status: "queued" | "running" | "succeeded" | "failed"
+  message: string
+  updated_at: string
+}
+type AccountActionMap = Record<string, Partial<Record<AccountActionName, AccountActionState>>>
 type Account = {
   email: string
   status: "complete" | "incomplete" | "failed"
@@ -45,7 +56,7 @@ type Account = {
   latest_detail: string
   recovery: { bound: boolean; email: string; reason: string; detail: string }
   events: Array<{ stage: string; detail: string; timestamp: string | null }>
-  recovery_events: Array<{ bound: boolean; reason: string; detail: string; timestamp: string | null }>
+  recovery_events: Array<{ bound: boolean; recovery_email: string; reason: string; detail: string; timestamp: string | null }>
   traffic: { available: boolean; total_bytes: number; human: string; by_stage: TrafficMetric[] }
 }
 
@@ -113,6 +124,17 @@ function statusLabel(status: Account["status"]) {
   return "进行中"
 }
 
+function recoveryReasonLabel(reason: string) {
+  const labels: Record<string, string> = {
+    binding_failed: "绑定失败",
+    disabled: "功能未启用",
+    not_requested: "未请求密保邮箱",
+    verified: "Microsoft 已验证",
+    verification_failed: "验证失败",
+  }
+  return labels[reason] || reason || "未记录原因"
+}
+
 function StageMark({ state, compact = false }: { state: StageState; compact?: boolean }) {
   return state.ok ? (
     <span className={cn("inline-flex shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700", compact ? "h-5 w-5" : "h-6 w-6")}>
@@ -169,7 +191,40 @@ function TrafficBars({ metrics, emptyLabel }: { metrics: TrafficMetric[]; emptyL
   )
 }
 
-function AccountDetail({ account, onClose }: { account: Account; onClose: () => void }) {
+function ActionStateRow({ state }: { state: AccountActionState }) {
+  const running = state.status === "queued" || state.status === "running"
+  const failed = state.status === "failed"
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs",
+        failed ? "border-red-200 bg-red-50 text-red-700" : state.status === "succeeded" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-sky-200 bg-sky-50 text-sky-700",
+      )}
+      role="status"
+    >
+      {running ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" /> : failed ? <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+      <span className="min-w-0 flex-1 break-words leading-5">{state.message}</span>
+      <span className="shrink-0 text-[11px] opacity-70">{formatDate(state.updated_at)}</span>
+    </div>
+  )
+}
+
+function AccountDetail({
+  account,
+  actions,
+  onAction,
+  onClose,
+}: {
+  account: Account
+  actions: Partial<Record<AccountActionName, AccountActionState>>
+  onAction: (account: Account, action: AccountActionName) => void
+  onClose: () => void
+}) {
+  const activeAction = Object.values(actions).find((state) => state && (state.status === "queued" || state.status === "running"))
+  const canAuthorize = account.stages.registered.ok && !activeAction
+  const canImport = account.stages.oauth_authorized.ok && !activeAction
+  const recoveryTone = account.recovery.bound ? "success" : account.recovery.email ? "warning" : "neutral"
+  const recoveryStatus = account.recovery.bound ? "已确认绑定" : account.recovery.email ? "已选择，未确认" : "未记录"
   return (
     <>
       <button className="fixed inset-0 z-30 cursor-default bg-slate-900/20 backdrop-blur-[1px]" onClick={onClose} aria-label="关闭详情" />
@@ -195,8 +250,93 @@ function AccountDetail({ account, onClose }: { account: Account; onClose: () => 
             <div className="rounded-md bg-slate-50 p-3">
               <p className="text-xs text-slate-500">观测流量</p>
               <p className="mt-1 text-base font-semibold text-slate-900">{account.traffic.available ? account.traffic.human : "未采集"}</p>
-            </div>
+              </div>
           </div>
+
+            <section className="mt-7">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-slate-900">密保邮箱</h3>
+                <Badge tone={recoveryTone}>{recoveryStatus}</Badge>
+              </div>
+              <div
+                className={cn(
+                  "rounded-md border p-3",
+                  account.recovery.bound
+                    ? "border-emerald-200 bg-emerald-50/60"
+                    : account.recovery.email
+                      ? "border-amber-200 bg-amber-50/60"
+                      : "border-slate-200 bg-slate-50",
+                )}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/80 text-slate-600">
+                    <Mail className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs text-slate-500">
+                      {account.recovery.bound ? "当前绑定地址" : account.recovery.email ? "最近选择地址" : "绑定地址"}
+                    </p>
+                    <p className="mt-1 break-all text-sm font-semibold text-slate-900">
+                      {account.recovery.email || "未记录"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      {account.recovery.bound
+                        ? "该地址已通过 Microsoft 验证"
+                        : recoveryReasonLabel(account.recovery.reason)}
+                    </p>
+                  </div>
+                </div>
+                {account.recovery.detail && <p className="mt-3 border-t border-black/5 pt-3 text-xs leading-5 text-slate-600">{account.recovery.detail}</p>}
+              </div>
+              {account.recovery_events.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs font-medium text-slate-500">验证记录</p>
+                  {account.recovery_events.slice(-5).reverse().map((event, index) => (
+                    <div key={`${event.timestamp}-${event.recovery_email}-${index}`} className="rounded-md border border-slate-200 px-3 py-2.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="min-w-0 break-all text-sm font-medium text-slate-700">{event.recovery_email || "未记录邮箱"}</span>
+                        <Badge tone={event.bound ? "success" : "warning"}>{event.bound ? "已绑定" : "未绑定"}</Badge>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between gap-3 text-xs text-slate-400">
+                        <span>{recoveryReasonLabel(event.reason)}</span>
+                        <span className="shrink-0">{formatDate(event.timestamp)}</span>
+                      </div>
+                      {event.detail && <p className="mt-1 break-words text-xs leading-5 text-slate-500">{event.detail}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+          <section className="mt-7">
+            <h3 className="mb-3 text-sm font-semibold text-slate-900">补充操作</h3>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <Button
+                variant={account.stages.oauth_authorized.ok ? "secondary" : "primary"}
+                className="w-full"
+                disabled={!canAuthorize}
+                onClick={() => onAction(account, "authorize")}
+                title={account.stages.registered.ok ? "执行 OAuth 授权" : "账号注册完成后才可授权"}
+              >
+                {activeAction?.action === "authorize" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
+                {account.stages.oauth_authorized.ok ? "重新授权" : "补充授权"}
+              </Button>
+              <Button
+                className="w-full"
+                disabled={!canImport}
+                onClick={() => onAction(account, "import_hx_email")}
+                title={account.stages.oauth_authorized.ok ? "导入 HX-Email" : "OAuth 授权完成后才可导入"}
+              >
+                {activeAction?.action === "import_hx_email" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+                {account.stages.hx_email_imported.ok ? "重新加入 HX-Email" : "加入 HX-Email"}
+              </Button>
+            </div>
+            {Object.values(actions).length > 0 && (
+              <div className="mt-3 space-y-2">
+                {Object.values(actions).filter((state): state is AccountActionState => Boolean(state)).map((state) => <ActionStateRow key={state.action} state={state} />)}
+              </div>
+            )}
+          </section>
 
           <section className="mt-7">
             <div className="mb-3 flex items-center justify-between">
@@ -269,13 +409,20 @@ function App() {
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<FilterKey>("all")
   const [selected, setSelected] = useState<Account | null>(null)
+  const [accountActions, setAccountActions] = useState<AccountActionMap>({})
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
     try {
-      const response = await fetch("/api/dashboard", { cache: "no-store" })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      setData((await response.json()) as Dashboard)
+      const [dashboardResponse, actionsResponse] = await Promise.all([
+        fetch("/api/dashboard", { cache: "no-store" }),
+        fetch("/api/account-actions", { cache: "no-store" }),
+      ])
+      if (!dashboardResponse.ok) throw new Error(`HTTP ${dashboardResponse.status}`)
+      if (!actionsResponse.ok) throw new Error(`操作状态 HTTP ${actionsResponse.status}`)
+      const actionsPayload = (await actionsResponse.json()) as { accounts?: AccountActionMap }
+      setData((await dashboardResponse.json()) as Dashboard)
+      setAccountActions(actionsPayload.accounts || {})
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : "无法读取面板数据")
@@ -294,6 +441,45 @@ function App() {
     const timer = window.setInterval(() => void refresh(), 5000)
     return () => window.clearInterval(timer)
   }, [autoRefresh, refresh])
+
+  const runAccountAction = useCallback(async (account: Account, action: AccountActionName) => {
+    const key = account.email.toLowerCase()
+    const optimistic: AccountActionState = {
+      email: account.email,
+      action,
+      status: "queued",
+      message: "正在提交操作",
+      updated_at: new Date().toISOString(),
+    }
+    setAccountActions((current) => ({
+      ...current,
+      [key]: { ...current[key], [action]: optimistic },
+    }))
+    try {
+      const response = await fetch(`/api/accounts/${encodeURIComponent(account.email)}/actions/${action.replace(/_/g, "-")}`, {
+        method: "POST",
+      })
+      const payload = (await response.json()) as { action?: AccountActionState; detail?: string }
+      if (!response.ok || !payload.action) throw new Error(payload.detail || `HTTP ${response.status}`)
+      setAccountActions((current) => ({
+        ...current,
+        [key]: { ...current[key], [action]: payload.action },
+      }))
+    } catch (err) {
+      setAccountActions((current) => ({
+        ...current,
+        [key]: {
+          ...current[key],
+          [action]: {
+            ...optimistic,
+            status: "failed",
+            message: err instanceof Error ? err.message : "操作提交失败",
+            updated_at: new Date().toISOString(),
+          },
+        },
+      }))
+    }
+  }, [])
 
   useEffect(() => {
     if (selected && data) {
@@ -418,7 +604,14 @@ function App() {
           <div className="mt-3 flex items-center justify-between text-xs text-slate-400"><span>显示 {accounts.length} / {data.accounts.length} 个账号</span><span>点击行查看阶段时间与流量明细</span></div>
         </section>
       </main>
-      {selected && <AccountDetail account={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <AccountDetail
+          account={selected}
+          actions={accountActions[selected.email.toLowerCase()] || {}}
+          onAction={(account, action) => void runAccountAction(account, action)}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   )
 }

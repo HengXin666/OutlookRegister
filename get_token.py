@@ -9,6 +9,10 @@ from datetime import datetime
 from urllib.parse import parse_qs, quote, urlencode
 
 
+class OAuthRecoveryChallengeError(RuntimeError):
+    pass
+
+
 def save_oauth_diagnostic(page, attempt, stage='failed'):
     results_dir = os.path.join(os.path.dirname(__file__), 'Results')
     base_path = os.path.join(results_dir, f'oauth_{stage}_attempt_{attempt + 1}')
@@ -42,7 +46,23 @@ def generate_code_challenge(code_verifier):
     sha256_hash = hashlib.sha256(code_verifier.encode()).digest()
     return base64.urlsafe_b64encode(sha256_hash).decode().rstrip('=')
 
-def handle_oauth2_form(page, email, password, attempt):
+def handle_oauth2_form(
+    page,
+    email,
+    password,
+    attempt,
+    recovery_challenge_handler=None,
+):
+    def visible_first(selectors):
+        for selector in selectors:
+            try:
+                locator = page.locator(selector).first
+                if locator.count() and locator.is_visible():
+                    return locator
+            except Exception:
+                pass
+        return None
+
     def submit_visible_form():
         for selector in ('#idSIButton9', 'button[type="submit"]', 'input[type="submit"]'):
             try:
@@ -61,6 +81,36 @@ def handle_oauth2_form(page, email, password, attempt):
     deadline = datetime.now().timestamp() + (25 if attempt == 0 else 8)
     while datetime.now().timestamp() < deadline:
         acted = False
+        proof_email_input = visible_first((
+            '#proof-confirmation-email-input',
+            'input[name="proofConfirmationEmail"]',
+            'input[data-testid="proof-confirmation-email-input"]',
+        ))
+        proof_code_input = visible_first((
+            'input[id^="codeEntry-"]',
+            '#proof-confirmation-code-input',
+            '#otc-confirmation-input',
+            'input[name="otc"]',
+            'input[name="code"]',
+            'input[autocomplete="one-time-code"]',
+            'input[inputmode="numeric"]',
+        ))
+        if proof_email_input is not None or proof_code_input is not None:
+            if recovery_challenge_handler is None:
+                stage = (
+                    'recovery_email_required'
+                    if proof_email_input is not None
+                    else 'recovery_code_required'
+                )
+                save_oauth_diagnostic(page, attempt, stage)
+                raise OAuthRecoveryChallengeError(
+                    'Microsoft 要求密保邮箱验证，但当前授权流程没有可用的验证处理器'
+                )
+            if not recovery_challenge_handler(page):
+                raise OAuthRecoveryChallengeError('Microsoft 密保邮箱验证未完成')
+            page.wait_for_timeout(500)
+            continue
+
         try:
             email_input = page.locator(
                 '#usernameEntry, [name="loginfmt"], input[type="email"]'
@@ -95,21 +145,42 @@ def handle_oauth2_form(page, email, password, attempt):
                 acted = True
         except Exception:
             pass
-        if not acted:
-            acted = submit_visible_form()
         page.wait_for_timeout(500 if acted else 250)
 
-def get_access_token(page, email, password=None, proxy=None, max_retries=3, traffic_recorder=None):
+def get_access_token(
+    page,
+    email,
+    password=None,
+    proxy=None,
+    max_retries=3,
+    traffic_recorder=None,
+    recovery_challenge_handler=None,
+    page_delay_ms=0,
+):
     for attempt in range(max_retries):
         result = _try_get_access_token(
-            page, email, attempt, password, proxy, traffic_recorder
+            page=page,
+            email=email,
+            attempt=attempt,
+            password=password,
+            proxy=proxy,
+            traffic_recorder=traffic_recorder,
+            recovery_challenge_handler=recovery_challenge_handler,
+            page_delay_ms=page_delay_ms,
         )
         if result[0] is not False:
             return result
     return False, False, False
 
 def _try_get_access_token(
-    page, email, attempt, password=None, proxy=None, traffic_recorder=None
+    page,
+    email,
+    attempt,
+    password=None,
+    proxy=None,
+    traffic_recorder=None,
+    recovery_challenge_handler=None,
+    page_delay_ms=0,
 ):
     with open('config.json', 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -148,10 +219,17 @@ def _try_get_access_token(
         try:
             page.wait_for_timeout(250)
             page.goto(authorize_url, timeout=30000)
+            _wait_for_page(page, page_delay_ms)
         except:
             return False, False, False
 
-        handle_oauth2_form(page, f"{email}{_email_suffix}", password, attempt)
+        handle_oauth2_form(
+            page,
+            f"{email}{_email_suffix}",
+            password,
+            attempt,
+            recovery_challenge_handler=recovery_challenge_handler,
+        )
         if not captured_url:
             save_oauth_diagnostic(page, attempt, 'after_form')
 
@@ -175,7 +253,9 @@ def _try_get_access_token(
                     return False, False, False
                 refresh_count += 1
                 try:
+                    _wait_for_page(page, page_delay_ms)
                     page.reload(timeout=10000)
+                    _wait_for_page(page, page_delay_ms)
                 except:
                     pass
         else:
@@ -199,13 +279,19 @@ def _try_get_access_token(
             'code_verifier': code_verifier,
             'scope': ' '.join(SCOPES)
         }
-        response = requests.post(
-            f'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token',
-            data=token_payload,
-            headers={'Content-Type': 'application/x-www-form-urlencoded'},
-            proxies=get_proxy(proxy),
-            timeout=30,
-        )
+        token_session = requests.Session()
+        token_session.trust_env = False
+        try:
+            _wait_for_page(page, page_delay_ms)
+            response = token_session.post(
+                f'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token',
+                data=token_payload,
+                headers={'Content-Type': 'application/x-www-form-urlencoded'},
+                proxies=get_proxy(proxy),
+                timeout=30,
+            )
+        finally:
+            token_session.close()
         if traffic_recorder is not None:
             response_content = getattr(response, 'content', b'')
             if not isinstance(response_content, bytes):
@@ -229,3 +315,13 @@ def _try_get_access_token(
         return False, False, False
 
     return False, False, False
+
+
+def _wait_for_page(page, milliseconds):
+    """Allow a dashboard page to settle before its next browser/API step."""
+    try:
+        delay = max(0, int(milliseconds or 0))
+    except (TypeError, ValueError):
+        delay = 0
+    if delay:
+        page.wait_for_timeout(delay)

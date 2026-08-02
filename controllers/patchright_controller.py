@@ -6,6 +6,7 @@ from .base_controller import BaseBrowserController, build_browser_proxy_settings
 class PatchrightController(BaseBrowserController):
 
     def launch_browser(self, proxy=None, playwright=None):
+        p = None
         try:
             p = playwright or sync_playwright().start()
 
@@ -14,13 +15,18 @@ class PatchrightController(BaseBrowserController):
 
             b = p.chromium.launch(
                 headless=False,            
-                args=['--lang=zh-CN'],
+                args=self.browser_launch_args(),
                 proxy=proxy_settings
             )
 
             return p, b
 
         except Exception as e:
+            if playwright is None and p is not None:
+                try:
+                    p.stop()
+                except Exception:
+                    pass
             print(f"启动浏览器失败: {e}")
             return False, False
         
@@ -30,6 +36,7 @@ class PatchrightController(BaseBrowserController):
         frame2 = frame1.frame_locator('iframe[style*="display: block"]')
 
         for _ in range(0, self.max_captcha_retries + 1):
+            self.record_captcha_attempt()
 
             page.wait_for_timeout(random.randint(250, 450))
             loc = frame2.locator('[aria-label="可访问性挑战"]')
@@ -82,19 +89,21 @@ class PatchrightController(BaseBrowserController):
 
     def get_thread_page(self):
         browser = self.get_thread_browser()
+        if not browser:
+            raise RuntimeError('无法创建注册浏览器')
         context = browser.new_context()
-        return context.new_page()
+        try:
+            return context.new_page()
+        except Exception:
+            try:
+                context.close()
+            except Exception:
+                pass
+            raise
 
     def clean_up(self, page=None, type="all_browser"):
         if type == "done_browser" and page:
-            context = page.context
-            context.close()
+            self.close_page_context(page)
 
         elif type == "all_browser":
-            for p, b in self.active_resources:
-                try:
-                    b.close()
-                except Exception: pass
-                try:
-                    p.stop()
-                except Exception: pass
+            self.close_all_resources()

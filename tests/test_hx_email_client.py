@@ -1,5 +1,8 @@
+import io
 import threading
 import unittest
+from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -132,6 +135,149 @@ class HXEmailClientTests(unittest.TestCase):
 
         self.assertEqual(code, "736251")
 
+    def test_read_code_selects_newest_timestamp_instead_of_last_array_item(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    {
+                        "codes": [
+                            {
+                                "message_id": "new",
+                                "code": "222222",
+                                "received_at": "2026-08-02T00:00:20+00:00",
+                            },
+                            {
+                                "message_id": "old",
+                                "code": "111111",
+                                "received_at": "2026-08-02T00:00:10+00:00",
+                            },
+                        ]
+                    }
+                )
+            ]
+        )
+        client = HXEmailClient(
+            {
+                "base_url": "http://127.0.0.1:8080/api/v1",
+                "api_key": "key",
+            },
+            session=session,
+        )
+
+        self.assertEqual(
+            client._read_code(
+                {
+                    "email": "backup@example.test",
+                    "usable_email_id": 7,
+                    "mode": "session",
+                }
+            ),
+            "222222",
+        )
+
+    def test_read_code_uses_newest_response_position_when_timestamp_is_missing(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    {
+                        "codes": [
+                            {"message_id": "old-looking-id", "code": "222222"},
+                            {"message_id": "new-looking-id", "code": "111111"},
+                        ]
+                    }
+                )
+            ]
+        )
+        client = HXEmailClient(
+            {
+                "base_url": "http://127.0.0.1:8080/api/v1",
+                "api_key": "key",
+            },
+            session=session,
+        )
+
+        self.assertEqual(
+            client._read_code(
+                {
+                    "email": "backup@example.test",
+                    "usable_email_id": 7,
+                    "mode": "session",
+                }
+            ),
+            "222222",
+        )
+
+    def test_wait_for_code_details_rejects_old_timestamp_and_logs_selected_code(self):
+        client = HXEmailClient(
+            {
+                "base_url": "http://127.0.0.1:8080",
+                "api_key": "key",
+                "code_timeout_seconds": 30,
+            }
+        )
+        baseline = datetime.now(timezone.utc) - timedelta(seconds=5)
+        candidates = client._normalize_code_candidates(
+            [
+                {
+                    "message_id": "old",
+                    "code": "111111",
+                    "received_at": (baseline - timedelta(seconds=2)).isoformat(),
+                },
+                {
+                    "message_id": "new",
+                    "code": "222222",
+                    "received_at": (baseline + timedelta(seconds=1)).isoformat(),
+                },
+            ],
+            "session",
+            {},
+        )
+        output = io.StringIO()
+        with (
+            patch("hx_email_client.random.uniform", return_value=0),
+            patch("hx_email_client.time.sleep"),
+            patch.object(client, "_read_code_candidates", return_value=candidates),
+            redirect_stdout(output),
+        ):
+            details = client.wait_for_code_details(
+                {"email": "backup@example.test"},
+                not_before=baseline,
+                known_message_ids={"old"},
+            )
+
+        self.assertEqual(details["code"], "222222")
+        self.assertEqual(details["message_id"], "new")
+        self.assertIn("code=111111", output.getvalue())
+        self.assertIn("code=222222", output.getvalue())
+        self.assertIn("使用验证码", output.getvalue())
+
+    def test_wait_for_code_details_uses_new_message_id_when_legacy_api_has_no_time(self):
+        client = HXEmailClient({"base_url": "http://127.0.0.1:8080", "api_key": "key"})
+        baseline = datetime.now(timezone.utc) - timedelta(seconds=1)
+        candidates = client._normalize_code_candidates(
+            [
+                {"message_id": "old", "code": "111111"},
+                {"message_id": "new", "code": "222222"},
+            ],
+            "session",
+            {},
+        )
+
+        with (
+            patch("hx_email_client.random.uniform", return_value=0),
+            patch("hx_email_client.time.sleep"),
+            patch.object(client, "_read_code_candidates", return_value=candidates),
+        ):
+            details = client.wait_for_code_details(
+                {"email": "backup@example.test"},
+                not_before=baseline,
+                known_message_ids={"old"},
+            )
+
+        self.assertEqual(details["code"], "222222")
+        self.assertIsNone(details["received_at"])
+        self.assertIsNotNone(details["observed_at"])
+
     def test_external_mailbox_uses_api_key_and_reads_verification_code(self):
         session = FakeSession([
             FakeResponse({
@@ -181,6 +327,65 @@ class HXEmailClientTests(unittest.TestCase):
             session.calls[2][2]["headers"],
             {"Authorization": "Bearer bearer"},
         )
+
+    def test_resolve_mailbox_finds_an_archived_temp_address(self):
+        session = FakeSession([
+            FakeResponse({
+                "usable_emails": [
+                    {
+                        "id": 9,
+                        "address": "backup@example.test",
+                        "kind": "temp",
+                        "status": "archived",
+                    }
+                ]
+            }),
+        ])
+        client = HXEmailClient(
+            {
+                "base_url": "http://localhost:5173/api/v1",
+                "api_key": "Authorization: Bearer token-value",
+            },
+            session=session,
+        )
+
+        mailbox = client.resolve_mailbox("backup@example.test")
+
+        self.assertEqual(
+            mailbox,
+            {
+                "email": "backup@example.test",
+                "task_token": "",
+                "usable_email_id": 9,
+                "mode": "session",
+            },
+        )
+        self.assertEqual(
+            session.calls[0][2]["params"]["keyword"],
+            "backup@example.test",
+        )
+
+    def test_finish_mailbox_archives_a_session_mailbox(self):
+        session = FakeSession([FakeResponse({"id": 9, "status": "archived"})])
+        client = HXEmailClient(
+            {
+                "base_url": "http://localhost:5173/api/v1",
+                "api_key": "Authorization: Bearer token-value",
+            },
+            session=session,
+        )
+
+        client.finish_mailbox(
+            {
+                "email": "backup@example.test",
+                "usable_email_id": 9,
+                "mode": "session",
+            },
+            True,
+        )
+
+        self.assertEqual(session.calls[0][0], "POST")
+        self.assertTrue(session.calls[0][1].endswith("/api/v1/temp-mail/9/archive"))
 
     def test_prefixed_base_url_and_full_authorization_header_are_normalized(self):
         client = HXEmailClient({

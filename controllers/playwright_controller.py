@@ -12,6 +12,7 @@ class PlaywrightController(BaseBrowserController):
         self.browser_path = data["playwright"]["browser_path"]
 
     def launch_browser(self, proxy=None, playwright=None):
+        p = None
         try:
             p = playwright or sync_playwright().start()
 
@@ -20,20 +21,34 @@ class PlaywrightController(BaseBrowserController):
             b = p.chromium.launch(
                 executable_path=self.browser_path,
                 headless=False,            
-                args=['--lang=zh-CN'],
+                args=self.browser_launch_args(),
                 proxy=proxy_settings
             )
 
             return p, b
 
         except Exception as e:
+            if playwright is None and p is not None:
+                try:
+                    p.stop()
+                except Exception:
+                    pass
             print(f"启动浏览器失败: {e}")
             return False, False
 
     def get_thread_page(self):
         browser = self.get_thread_browser()
+        if not browser:
+            raise RuntimeError('无法创建注册浏览器')
         context = browser.new_context()
-        return context.new_page()
+        try:
+            return context.new_page()
+        except Exception:
+            try:
+                context.close()
+            except Exception:
+                pass
+            raise
     
     def handle_captcha(self, page):
 
@@ -41,6 +56,7 @@ class PlaywrightController(BaseBrowserController):
         page.wait_for_timeout(800)
 
         for _ in range(0, self.max_captcha_retries + 1):
+            self.record_captcha_attempt()
 
             page.keyboard.press('Enter')
             page.wait_for_timeout(11500)
@@ -79,14 +95,7 @@ class PlaywrightController(BaseBrowserController):
     def clean_up(self, page=None, type="all_browser"):
 
         if type == "done_browser" and page:
-            context = page.context
-            context.close()
+            self.close_page_context(page)
 
         elif type == "all_browser":
-            for p, b in self.active_resources:
-                try:
-                    b.close()
-                except Exception: pass
-                try:
-                    p.stop()
-                except Exception: pass
+            self.close_all_resources()

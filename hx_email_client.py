@@ -1,9 +1,12 @@
 import os
 import json
 import random
+import re
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import requests
 from traffic_tracker import stage_for_hx_email_path
@@ -32,12 +35,29 @@ class HXEmailClient:
         self.timeout = float(config.get("request_timeout_seconds", 15))
         self.code_timeout = float(config.get("code_timeout_seconds", 120))
         self.poll_interval = float(config.get("poll_interval_seconds", 3))
+        try:
+            self.code_timestamp_skew_seconds = max(
+                0.0, float(config.get("code_timestamp_skew_seconds", 15))
+            )
+        except (TypeError, ValueError):
+            self.code_timestamp_skew_seconds = 15.0
+        try:
+            configured_max_age = float(
+                config.get("code_max_age_seconds", max(self.code_timeout, 300.0))
+            )
+        except (TypeError, ValueError):
+            configured_max_age = max(self.code_timeout, 300.0)
+        self.code_max_age_seconds = max(1.0, configured_max_age)
         self.caller_id = str(config.get("caller_id", "outlook-register")).strip()
         self.account_group = str(
             config.get("account_group", "OutlookRegister 自动注册")
         ).strip()
         self.account_group_color = str(config.get("account_group_color", "#238636")).strip()
         self.session = session or requests.Session()
+        try:
+            self.session.trust_env = False
+        except Exception:
+            pass
         self.access_token = ""
         self._traffic_recorder = None
         self._account_group_lock = threading.Lock()
@@ -45,6 +65,12 @@ class HXEmailClient:
 
     def set_traffic_recorder(self, recorder):
         self._traffic_recorder = recorder
+
+    def close(self):
+        try:
+            self.session.close()
+        except Exception:
+            pass
 
     def api_headers(self):
         if not self.api_key:
@@ -86,7 +112,20 @@ class HXEmailClient:
             "mode": "session",
         }
 
-    def wait_for_code(self, mailbox, exclude_codes=None):
+    def wait_for_code(self, mailbox, exclude_codes=None, not_before=None):
+        """Wait for a code while retaining the legacy string-only return value.
+
+        The recovery flow passes ``not_before`` and uses the metadata-aware
+        implementation below. Calls without a baseline keep the old API
+        contract for integrations that only need a code string.
+        """
+        if not_before is not None:
+            return self.wait_for_code_details(
+                mailbox,
+                exclude_codes=exclude_codes,
+                not_before=not_before,
+            )["code"]
+
         # Give the newly sent message time to arrive before the first mailbox read.
         time.sleep(random.uniform(3, 5))
         deadline = time.monotonic() + self.code_timeout
@@ -103,6 +142,131 @@ class HXEmailClient:
         detail = f": {last_error}" if last_error else ""
         raise HXEmailError(f"等待 Microsoft 安全代码超时{detail}")
 
+    def wait_for_code_details(
+        self,
+        mailbox,
+        exclude_codes=None,
+        not_before=None,
+        known_message_ids=None,
+        known_codes=None,
+    ):
+        """Wait for a newly received six-digit code and return its metadata.
+
+        ``not_before`` is the instant Microsoft was asked to send the code. A
+        mailbox may contain older messages, so a code without a usable message
+        timestamp is accepted only when its message ID was absent from the
+        pre-send snapshot. This fallback is needed for older HX-Email servers
+        whose ``/codes`` response exposes IDs but not provider timestamps.
+        """
+        baseline = self._coerce_datetime(not_before)
+        if baseline is None:
+            raise HXEmailError("等待验证码时缺少有效的发送时间基线")
+
+        # Give the newly sent message time to arrive before the first mailbox read.
+        time.sleep(random.uniform(3, 5))
+        deadline = time.monotonic() + self.code_timeout
+        excluded = {str(code).strip() for code in (exclude_codes or ())}
+        known_ids = (
+            {str(value).strip() for value in known_message_ids if str(value).strip()}
+            if known_message_ids is not None
+            else None
+        )
+        known_code_values = (
+            {str(value).strip() for value in known_codes if str(value).strip()}
+            if known_codes is not None
+            else None
+        )
+        observed = set()
+        rejected = set()
+        last_reason = ""
+
+        while time.monotonic() < deadline:
+            try:
+                candidates = self._read_code_candidates(mailbox)
+            except HXEmailError as exc:
+                last_reason = str(exc)
+                time.sleep(self.poll_interval)
+                continue
+
+            accepted = []
+            now = self._utc_now()
+            for candidate in candidates:
+                candidate = dict(candidate)
+                candidate.setdefault("observed_at", now.isoformat())
+                observation_key = (
+                    candidate.get("message_id", ""),
+                    candidate.get("code", ""),
+                    candidate.get("received_at", ""),
+                )
+                if observation_key not in observed:
+                    observed.add(observation_key)
+                    self._log_code_event("获取到验证码", candidate, mailbox=mailbox)
+
+                code = str(candidate.get("code") or "").strip()
+                if not re.fullmatch(r"\d{6}", code):
+                    rejection_key = (*observation_key, "format")
+                    if rejection_key not in rejected:
+                        rejected.add(rejection_key)
+                        self._log_code_event(
+                            "丢弃验证码",
+                            candidate,
+                            "格式不是六位数字",
+                            mailbox=mailbox,
+                        )
+                    last_reason = "HX-Email 返回了无效的安全代码格式"
+                    continue
+                if code in excluded:
+                    rejection_key = (*observation_key, "excluded")
+                    if rejection_key not in rejected:
+                        rejected.add(rejection_key)
+                        self._log_code_event(
+                            "忽略验证码",
+                            candidate,
+                            "该验证码已经尝试过",
+                            mailbox=mailbox,
+                        )
+                    last_reason = "HX-Email 返回了已经尝试过的安全代码"
+                    continue
+
+                valid, reason = self._validate_code_timestamp(
+                    candidate,
+                    baseline,
+                    now,
+                    known_ids,
+                    known_code_values,
+                )
+                if not valid:
+                    rejection_key = (*observation_key, reason)
+                    if rejection_key not in rejected:
+                        rejected.add(rejection_key)
+                        self._log_code_event(
+                            "丢弃验证码",
+                            candidate,
+                            reason,
+                            mailbox=mailbox,
+                        )
+                    last_reason = reason
+                    continue
+                accepted.append(candidate)
+
+            if accepted:
+                selected = max(accepted, key=self._candidate_sort_key)
+                self._log_code_event(
+                    "使用验证码",
+                    selected,
+                    f"发送基线={baseline.isoformat()}",
+                    mailbox=mailbox,
+                )
+                return {
+                    key: value
+                    for key, value in selected.items()
+                    if not key.startswith("_")
+                }
+            time.sleep(self.poll_interval)
+
+        detail = f"；最近原因={last_reason}" if last_reason else ""
+        raise HXEmailError(f"等待 Microsoft 安全代码超时{detail}")
+
     def finish_mailbox(self, mailbox, success, detail=""):
         task_token = mailbox.get("task_token")
         if task_token and self.api_key:
@@ -115,6 +279,68 @@ class HXEmailClient:
                 )
             except HXEmailError:
                 pass
+
+        usable_email_id = mailbox.get("usable_email_id")
+        if usable_email_id and (
+            self.prefer_session_api or self.access_token or (self.username and self.password)
+        ):
+            try:
+                self._v1_request(
+                    "POST",
+                    f"/api/v1/temp-mail/{usable_email_id}/archive",
+                )
+            except HXEmailError:
+                pass
+
+    def resolve_mailbox(self, email, mailbox_hint=None):
+        """Resolve a previously created temp mailbox so later codes remain readable."""
+        normalized_email = str(email or "").strip()
+        if not normalized_email:
+            raise HXEmailError("密保邮箱地址不能为空")
+        hint = dict(mailbox_hint or {})
+        if hint.get("usable_email_id"):
+            return {
+                "email": normalized_email,
+                "task_token": str(hint.get("task_token") or ""),
+                "usable_email_id": hint["usable_email_id"],
+                "mode": str(hint.get("mode") or "session"),
+            }
+        if self.api_key and not self.prefer_session_api:
+            return {
+                "email": normalized_email,
+                "task_token": "",
+                "usable_email_id": None,
+                "mode": "external",
+            }
+
+        payload = self._v1_request(
+            "GET",
+            "/api/v1/workbench/usable-emails",
+            params={
+                "kind": "temp",
+                "keyword": normalized_email,
+                "page": 1,
+                "page_size": 200,
+            },
+        )
+        usable_emails = payload.get("usable_emails") or []
+        matched = next(
+            (
+                item
+                for item in usable_emails
+                if str(item.get("address") or "").strip().casefold()
+                == normalized_email.casefold()
+            ),
+            None,
+        )
+        if not matched or not matched.get("id"):
+            raise HXEmailError(f"HX-Email 中未找到密保邮箱 {normalized_email}")
+        return {
+            "email": normalized_email,
+            "task_token": "",
+            "usable_email_id": matched["id"],
+            "mode": "session",
+        }
 
     def import_outlook_account(
         self,
@@ -251,19 +477,20 @@ class HXEmailClient:
             None,
         )
 
-        usable_email_id = mailbox.get("usable_email_id")
-        if usable_email_id and (
-            self.prefer_session_api or self.access_token or (self.username and self.password)
-        ):
-            try:
-                self._v1_request(
-                    "POST",
-                    f"/api/v1/temp-mail/{usable_email_id}/archive",
-                )
-            except HXEmailError:
-                pass
-
     def _read_code(self, mailbox):
+        """Return the newest valid code for legacy callers."""
+        candidates = self._read_code_candidates(mailbox)
+        valid = [
+            candidate
+            for candidate in candidates
+            if re.fullmatch(r"\d{6}", str(candidate.get("code") or "").strip())
+        ]
+        if not valid:
+            return ""
+        selected = max(valid, key=self._candidate_sort_key)
+        return str(selected["code"]).strip()
+
+    def _read_code_candidates(self, mailbox):
         email = mailbox["email"]
         if self.api_key and mailbox.get("mode") == "external":
             payload = self._request(
@@ -278,9 +505,9 @@ class HXEmailClient:
                 },
             )
             data = self._external_data(payload, "读取安全代码")
-            code = str(data.get("verification_code") or "").strip()
-            if code:
-                return code
+            candidates = self._candidate_items(data)
+            if candidates:
+                return self._normalize_code_candidates(candidates, "external", data)
 
         usable_email_id = mailbox.get("usable_email_id")
         if usable_email_id and (
@@ -292,8 +519,228 @@ class HXEmailClient:
             )
             codes = payload.get("codes") or []
             if codes:
-                return str(codes[-1].get("code") or "").strip()
-        return ""
+                return self._normalize_code_candidates(codes, "session", payload)
+        return []
+
+    def code_message_ids(self, mailbox):
+        """Return the message IDs visible before a verification request."""
+        return {
+            str(candidate.get("message_id") or "").strip()
+            for candidate in self._read_code_candidates(mailbox)
+            if str(candidate.get("message_id") or "").strip()
+        }
+
+    def code_snapshot(self, mailbox):
+        """Return code candidates visible at one point in time."""
+        return [dict(candidate) for candidate in self._read_code_candidates(mailbox)]
+
+    @classmethod
+    def _candidate_items(cls, data):
+        if isinstance(data, list):
+            return data
+        if not isinstance(data, dict):
+            return []
+        for key in ("codes", "messages", "items", "results"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+        if any(
+            key in data
+            for key in (
+                "code",
+                "verification_code",
+                "verificationCode",
+                "otp",
+            )
+        ):
+            return [data]
+        return []
+
+    @classmethod
+    def _normalize_code_candidates(cls, items, source, envelope):
+        fallback_timestamp = cls._timestamp_from_item(envelope)
+        candidates = []
+        for position, item in enumerate(items):
+            if isinstance(item, str):
+                item = {"code": item}
+            if not isinstance(item, dict):
+                continue
+            containers = [item]
+            for nested_key in ("message", "email", "mail"):
+                nested = item.get(nested_key)
+                if isinstance(nested, dict):
+                    containers.append(nested)
+            code = ""
+            message_id = ""
+            received_at_value = None
+            for container in containers:
+                if not code:
+                    for key in (
+                        "code",
+                        "verification_code",
+                        "verificationCode",
+                        "otp",
+                    ):
+                        value = container.get(key)
+                        if value not in (None, ""):
+                            code = str(value).strip()
+                            break
+                if not message_id:
+                    for key in (
+                        "message_id",
+                        "messageId",
+                        "email_id",
+                        "emailId",
+                        "matched_email_id",
+                        "matchedEmailId",
+                        "uid",
+                        "id",
+                    ):
+                        value = container.get(key)
+                        if value not in (None, ""):
+                            message_id = str(value).strip()
+                            break
+                if received_at_value is None:
+                    received_at_value = cls._timestamp_from_item(container)
+            received_at = cls._coerce_datetime(received_at_value)
+            if received_at is None:
+                received_at = fallback_timestamp
+            if not code:
+                continue
+            candidates.append(
+                {
+                    "code": code,
+                    "received_at": cls._format_timestamp(received_at),
+                    "message_id": message_id,
+                    "source": source,
+                    "_received_at": received_at,
+                    # Older HX-Email servers omit mail timestamps. Their
+                    # response is newest-first, so retain that order.
+                    "_position": position,
+                }
+            )
+        return candidates
+
+    def _candidate_sort_key(self, candidate):
+        received_at = self._coerce_datetime(
+            candidate.get("_received_at") or candidate.get("received_at")
+        )
+        try:
+            position = int(candidate.get("_position", 0))
+        except (TypeError, ValueError):
+            position = 0
+        if received_at is not None:
+            return (1, received_at, -position)
+        return (0, datetime.min.replace(tzinfo=timezone.utc), -position)
+
+    @classmethod
+    def _timestamp_from_item(cls, item):
+        if not isinstance(item, dict):
+            return None
+        for key in (
+            "received_at",
+            "receivedAt",
+            "received_time",
+            "receivedTime",
+            "receivedDateTime",
+            "created_at",
+            "createdAt",
+            "sent_at",
+            "sentAt",
+            "timestamp",
+            "email_date",
+            "message_date",
+            "date",
+            "created",
+        ):
+            value = item.get(key)
+            if value not in (None, ""):
+                return value
+        return None
+
+    @classmethod
+    def _coerce_datetime(cls, value):
+        if value is None or value == "":
+            return None
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric > 100_000_000_000:
+                numeric /= 1000
+            try:
+                parsed = datetime.fromtimestamp(numeric, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+        else:
+            text = str(value).strip()
+            if not text:
+                return None
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                try:
+                    parsed = parsedate_to_datetime(text)
+                except (TypeError, ValueError, OverflowError):
+                    return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _format_timestamp(value):
+        return value.isoformat() if value is not None else None
+
+    @staticmethod
+    def _utc_now():
+        return datetime.now(timezone.utc)
+
+    def _validate_code_timestamp(
+        self,
+        candidate,
+        baseline,
+        now,
+        known_message_ids=None,
+        known_codes=None,
+    ):
+        received_at = candidate.get("_received_at")
+        if received_at is None:
+            message_id = str(candidate.get("message_id") or "").strip()
+            code = str(candidate.get("code") or "").strip()
+            if known_message_ids is not None and message_id:
+                if message_id not in known_message_ids:
+                    return True, ""
+                if known_codes is not None and code not in known_codes:
+                    return True, ""
+            return False, "验证码缺少邮件接收时间，无法确认是本次发送"
+        if received_at < baseline - self._timestamp_delta():
+            return False, f"验证码时间早于本次发送基线（{candidate.get('received_at')}）"
+        if received_at > now + self._timestamp_delta():
+            return False, f"验证码时间晚于当前时间（{candidate.get('received_at')}）"
+        age = (now - received_at).total_seconds()
+        if age > self.code_max_age_seconds:
+            return False, f"验证码已超过允许时效（{candidate.get('received_at')}）"
+        return True, ""
+
+    def _timestamp_delta(self):
+        return timedelta(seconds=self.code_timestamp_skew_seconds)
+
+    @staticmethod
+    def _log_code_event(event, candidate, detail="", mailbox=None):
+        code = str(candidate.get("code") or "<empty>")
+        received_at = candidate.get("received_at") or "unknown"
+        observed_at = candidate.get("observed_at") or "unknown"
+        message_id = str(candidate.get("message_id") or "unknown")
+        source = str(candidate.get("source") or "unknown")
+        mailbox_email = str((mailbox or {}).get("email") or "unknown")
+        suffix = f"; {detail}" if detail else ""
+        print(
+            f"[Recovery Code] {event}: code={code}; "
+            f"received_at={received_at}; observed_at={observed_at}; "
+            f"message_id={message_id}; "
+            f"source={source}; mailbox={mailbox_email}{suffix}",
+            flush=True,
+        )
 
     def _login(self):
         if not self.username or not self.password:

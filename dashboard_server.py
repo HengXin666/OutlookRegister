@@ -11,9 +11,11 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+
+from dashboard_actions import DashboardActionError, DashboardActionRunner
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -604,6 +606,7 @@ class DashboardStore:
 
 
 app = FastAPI(title="Outlook Register Dashboard", version="1.0.0")
+ACTION_RUNNER = DashboardActionRunner(PROJECT_ROOT, RESULTS_DIR)
 
 
 @app.get("/api/dashboard")
@@ -614,6 +617,21 @@ def get_dashboard() -> dict[str, Any]:
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"ok": True, "results_dir": str(RESULTS_DIR)}
+
+
+@app.get("/api/account-actions")
+def get_account_actions() -> dict[str, Any]:
+    return {"accounts": ACTION_RUNNER.snapshot()}
+
+
+@app.post("/api/accounts/{email}/actions/{action}", status_code=202)
+def run_account_action(email: str, action: str) -> dict[str, Any]:
+    normalized_action = action.replace("-", "_").strip().casefold()
+    try:
+        state = ACTION_RUNNER.submit(email, normalized_action)
+    except DashboardActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"action": state}
 
 
 @app.get("/", include_in_schema=False)

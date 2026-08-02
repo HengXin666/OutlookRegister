@@ -12,7 +12,7 @@ class BrowserProxySettingsTests(unittest.TestCase):
         self.assertEqual(settings["server"], "http://127.0.0.1:18088")
         self.assertEqual(settings["username"], "hx-session-user")
         self.assertEqual(settings["password"], "secret:@value")
-        self.assertEqual(settings["bypass"], "localhost")
+        self.assertEqual(settings["bypass"], "localhost,127.0.0.1,[::1]")
 
     def test_empty_proxy_disables_browser_proxy(self):
         self.assertIsNone(build_browser_proxy_settings(""))

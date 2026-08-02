@@ -89,6 +89,15 @@ class DashboardStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["stages"][0]["average_seconds"], 5.0)
         self.assertEqual(snapshot["traffic"]["total_bytes"], 300)
         self.assertEqual(snapshot["accounts"][0]["traffic"]["total_bytes"], 300)
+        self.assertTrue(snapshot["accounts"][0]["recovery"]["bound"])
+        self.assertEqual(
+            snapshot["accounts"][0]["recovery"]["email"],
+            "temporary@example.com",
+        )
+        self.assertEqual(
+            snapshot["accounts"][0]["recovery_events"][0]["recovery_email"],
+            "temporary@example.com",
+        )
 
         account_json = json.dumps(snapshot["accounts"][0], ensure_ascii=False)
         self.assertNotIn("do-not-return", account_json)
@@ -109,7 +118,12 @@ class TrafficRecorderTests(unittest.TestCase):
     def test_task_buckets_are_flushed_as_stage_records(self):
         with tempfile.TemporaryDirectory() as directory:
             recorder = TrafficRecorder(directory)
-            recorder.start_task("user@outlook.com")
+            recorder.start_task(
+                "user@outlook.com",
+                flow_id="flow-123",
+                proxy_session_id="session-123",
+                proxy_exit_ip="203.0.113.20",
+            )
             with recorder.stage("residential_registration", "residential_browser"):
                 recorder.record(bytes_received=128)
             recorder.record_http(
@@ -134,6 +148,15 @@ class TrafficRecorderTests(unittest.TestCase):
                 ("residential_registration", 128),
                 ("oauth_token_exchange", 96),
             },
+        )
+        self.assertEqual({record["flow_id"] for record in records}, {"flow-123"})
+        self.assertEqual(
+            {record["proxy_session_id"] for record in records},
+            {"session-123"},
+        )
+        self.assertEqual(
+            {record["proxy_exit_ip"] for record in records},
+            {"203.0.113.20"},
         )
 
 

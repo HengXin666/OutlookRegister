@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import ipaddress
+import json
 import threading
 import time
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -17,6 +19,7 @@ class ProxyLease:
     token: str
     session_id: str = ""
     session_scoped: bool = False
+    exit_ip: str = ""
 
 
 class RotatingProxyPool:
@@ -41,6 +44,11 @@ class RotatingProxyPool:
         ).strip().lower()
         self.check_proxy = bool(config.get("check_proxy", False))
         self.exit_ip_endpoint = str(config.get("exit_ip_endpoint", "https://api.ipify.org?format=json"))
+        self.verify_browser_exit_ip = bool(config.get("verify_browser_exit_ip", True))
+        self.required_pool_size = max(int(config.get("required_pool_size", 0)), 0)
+        self._enforce_unique_exit_ip = bool(
+            config.get("enforce_unique_exit_ip", self.check_proxy)
+        )
 
         self.entries = []
         for entry in config.get("tokens", []) or []:
@@ -59,9 +67,25 @@ class RotatingProxyPool:
             )
 
         self._session = requests.Session()
+        self._session.trust_env = False
         self._lock = threading.Lock()
+        self._allocation_lock = threading.Lock()
         self._request_lock = threading.Lock()
+        self._active_exit_ips: dict[str, tuple[str, str]] = {}
         self._next_index = 0
+
+        if self.enforce_unique_exit_ip and not self.check_proxy:
+            raise ProxyRotationError(
+                "enforce_unique_exit_ip=true 时必须同时启用 check_proxy"
+            )
+        if self.enforce_unique_exit_ip and not self.session_scoped:
+            raise ProxyRotationError(
+                "enforce_unique_exit_ip=true 时必须同时启用 session_scoped"
+            )
+
+    @property
+    def enforce_unique_exit_ip(self):
+        return bool(getattr(self, "_enforce_unique_exit_ip", False))
 
     def acquire_proxy(self):
         """
@@ -70,42 +94,86 @@ class RotatingProxyPool:
         开启 check_proxy 时，会在切换后通过该代理请求出口 IP 回显接口，
         确认代理真实可用才返回，避免用坏代理浪费一次注册机会。
         """
-        with self._lock:
-            start_index = self._next_index % len(self.entries)
-            self._next_index += 1
+        # Serialize allocation and verification so two concurrent workers cannot
+        # both reserve the same observed exit IP between the check and insert.
+        with self._allocation_lock:
+            with self._lock:
+                start_index = self._next_index % len(self.entries)
+                self._next_index += 1
 
-        errors = []
-        for offset in range(len(self.entries)):
-            entry = self.entries[(start_index + offset) % len(self.entries)]
-            lease = None
-            try:
-                if self.session_scoped:
-                    lease = self._create_session(entry)
-                else:
-                    self._rotate(entry)
-                    lease = ProxyLease(proxy=entry["proxy"], token=entry["token"])
-                if self.check_proxy:
-                    exit_ip = self._verify(lease.proxy)
-                    print(f"[ProxyRotate] 代理可用性检查通过 - exit_ip={exit_ip}")
-                return lease
-            except ProxyRotationError as exc:
-                if lease is not None and lease.session_scoped:
-                    self.release(lease)
-                errors.append(f"token {entry['token'][:8]}...: {exc}")
+            errors = []
+            for offset in range(len(self.entries)):
+                entry = self.entries[(start_index + offset) % len(self.entries)]
+                lease = None
+                try:
+                    if self.session_scoped:
+                        lease = self._create_session(entry)
+                    else:
+                        self._rotate(entry)
+                        lease = ProxyLease(proxy=entry["proxy"], token=entry["token"])
+                    if self.check_proxy:
+                        exit_ip = self._verify(lease.proxy)
+                        lease = replace(lease, exit_ip=exit_ip)
+                        self._reserve_exit_ip(lease)
+                        print(
+                            "[ProxyRotate] 代理可用性检查通过 - "
+                            f"session_id={lease.session_id}, exit_ip={exit_ip}"
+                        )
+                    return lease
+                except ProxyRotationError as exc:
+                    if lease is not None:
+                        self.release(lease)
+                    errors.append(f"token {entry['token'][:8]}...: {exc}")
 
-        raise ProxyRotationError("所有住宅代理渠道切换失败: " + " | ".join(errors))
+            raise ProxyRotationError("所有住宅代理渠道切换失败: " + " | ".join(errors))
 
     def switch_after_registration(self, lease):
-        """Keep the browser open while moving to the configured low-cost route."""
-        self._switch_route(lease, self.post_registration_route)
+        """Move a completed flow to the configured route after its browser is closed."""
+        return self._switch_route(
+            lease,
+            self.post_registration_route,
+            verify_exit_ip=False,
+        )
 
     def switch_to_direct(self, lease):
         """Compatibility helper for callers that explicitly require DIRECT."""
-        self._switch_route(lease, "direct")
+        return self._switch_route(lease, "direct")
 
-    def _switch_route(self, lease, route_mode):
-        if not lease or not lease.session_scoped:
+    def verify_browser_page(self, page, lease):
+        """Verify that a browser page uses the same exit IP as its lease."""
+        if (
+            not self.verify_browser_exit_ip
+            or not self.check_proxy
+            or not lease
+            or not lease.exit_ip
+        ):
             return
+        try:
+            page.goto(
+                self.exit_ip_endpoint,
+                timeout=int(self.timeout * 1000),
+                wait_until="domcontentloaded",
+            )
+            body = page.locator("body").inner_text(timeout=5000).strip()
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                payload = None
+            browser_ip = self._parse_exit_ip(payload, body)
+        except Exception as exc:
+            raise ProxyRotationError(f"浏览器出口 IP 验证失败: {exc}") from exc
+        if browser_ip != lease.exit_ip:
+            raise ProxyRotationError(
+                f"浏览器出口 IP 与 lease 不一致: expected={lease.exit_ip}, actual={browser_ip}"
+            )
+        print(
+            "[ProxyRotate] 浏览器出口 IP 验证通过 - "
+            f"session_id={lease.session_id}, exit_ip={browser_ip}"
+        )
+
+    def _switch_route(self, lease, route_mode, verify_exit_ip=True):
+        if not lease or not lease.session_scoped:
+            return lease
         response = self._request(
             "POST",
             f"/rot/{lease.token}/sessions/{lease.session_id}/route",
@@ -118,10 +186,24 @@ class RotatingProxyPool:
         payload = self._json(response, f"会话切换 {route_mode}")
         if payload.get("route_mode") != route_mode:
             raise ProxyRotationError(f"会话切换 {route_mode} 响应状态不一致")
+        if not self.check_proxy or not verify_exit_ip:
+            return lease
+
+        exit_ip = self._verify(lease.proxy)
+        updated = replace(lease, exit_ip=exit_ip)
+        self._replace_exit_ip(lease, updated)
+        print(
+            "[ProxyRotate] 会话出口已重新确认 - "
+            f"session_id={lease.session_id}, route={route_mode}, exit_ip={exit_ip}"
+        )
+        return updated
 
     def release(self, lease):
         """Release server-side credentials after the browser has closed."""
-        if not lease or not lease.session_scoped:
+        if not lease:
+            return
+        if not lease.session_scoped:
+            self._release_exit_ip(lease)
             return
         try:
             response = self._request(
@@ -130,11 +212,49 @@ class RotatingProxyPool:
             )
             if response.status_code not in (204, 404):
                 print(f"[ProxyRotate] 释放会话失败 - HTTP {response.status_code}")
+                return
+            self._release_exit_ip(lease)
         except ProxyRotationError as exc:
             print(f"[ProxyRotate] 释放会话失败 - {exc}")
 
+    def _reserve_exit_ip(self, lease):
+        if not self.enforce_unique_exit_ip or not lease.exit_ip:
+            return
+        owner = (lease.token, lease.session_id)
+        with self._lock:
+            current_owner = self._active_exit_ips.get(lease.exit_ip)
+            if current_owner is not None and current_owner != owner:
+                raise ProxyRotationError(
+                    f"活动窗口出口 IP 重复: {lease.exit_ip} "
+                    f"(已有 session_id={current_owner[1]})"
+                )
+            self._active_exit_ips[lease.exit_ip] = owner
+
+    def _replace_exit_ip(self, previous, updated):
+        if not self.enforce_unique_exit_ip or not updated.exit_ip:
+            return
+        owner = (updated.token, updated.session_id)
+        with self._lock:
+            current_owner = self._active_exit_ips.get(updated.exit_ip)
+            if current_owner is not None and current_owner != owner:
+                raise ProxyRotationError(
+                    f"切换后活动窗口出口 IP 重复: {updated.exit_ip} "
+                    f"(已有 session_id={current_owner[1]})"
+                )
+            if previous.exit_ip and self._active_exit_ips.get(previous.exit_ip) == owner:
+                del self._active_exit_ips[previous.exit_ip]
+            self._active_exit_ips[updated.exit_ip] = owner
+
+    def _release_exit_ip(self, lease):
+        if not self.enforce_unique_exit_ip or not lease.exit_ip:
+            return
+        owner = (lease.token, lease.session_id)
+        with self._lock:
+            if self._active_exit_ips.get(lease.exit_ip) == owner:
+                del self._active_exit_ips[lease.exit_ip]
+
     def _create_session(self, entry):
-        session_id = uuid.uuid4().hex[:12]
+        session_id = uuid.uuid4().hex
         response = self._request(
             "PUT",
             f"/rot/{entry['token']}/sessions/{session_id}",
@@ -149,6 +269,19 @@ class RotatingProxyPool:
             password = str(payload.get("proxy_password") or "")
             if not username or not password:
                 raise ProxyRotationError("创建窗口会话响应缺少代理账号或密码")
+            # The current sticky-session API allocates nodes on demand and
+            # omits the legacy pool_size field. Keep the compatibility check
+            # only when the server explicitly sends that field.
+            if self.required_pool_size and "pool_size" in payload:
+                try:
+                    pool_size = int(payload["pool_size"])
+                except (TypeError, ValueError) as exc:
+                    raise ProxyRotationError("代理池容量字段无效") from exc
+                if pool_size < self.required_pool_size:
+                    raise ProxyRotationError(
+                        f"代理池容量不足: pool_size={pool_size}, "
+                        f"required={self.required_pool_size}"
+                    )
             proxy = self._proxy_with_credentials(entry["proxy"], username, password)
         except ProxyRotationError:
             # PUT may already have allocated a pool slot even if its response is
@@ -160,9 +293,15 @@ class RotatingProxyPool:
                 session_scoped=True,
             ))
             raise
+        if "pool_size" in payload:
+            allocation_detail = (
+                f"slot={payload.get('session_index')}/{payload.get('pool_size')}"
+            )
+        else:
+            allocation_detail = f"session_index={payload.get('session_index')}"
         print(
             "[ProxyRotate] 已创建独立窗口会话 - "
-            f"session_id={session_id}, slot={payload.get('session_index')}/{payload.get('pool_size')}"
+            f"session_id={session_id}, {allocation_detail}"
         )
         return ProxyLease(
             proxy=proxy,
@@ -244,14 +383,34 @@ class RotatingProxyPool:
                     self.exit_ip_endpoint,
                     proxies={"http": proxy, "https": proxy},
                     timeout=self.timeout,
-                )
+            )
             response.raise_for_status()
-            payload = response.json()
-            exit_ip = payload.get("ip") or payload.get("origin") or ""
-            if exit_ip:
-                return exit_ip
-            return str(response.text).strip()
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            return self._parse_exit_ip(payload, response.text)
         except (requests.RequestException, OSError) as exc:
             raise ProxyRotationError(f"代理可用性检查失败: {exc}") from exc
         except ValueError as exc:
             raise ProxyRotationError(f"出口 IP 接口返回异常: {exc}") from exc
+
+    @staticmethod
+    def _parse_exit_ip(payload, text=""):
+        if isinstance(payload, dict):
+            candidate = payload.get("ip") or payload.get("origin") or ""
+        else:
+            candidate = text
+        if isinstance(candidate, (list, tuple)):
+            candidates = candidate
+        else:
+            candidates = str(candidate or "").replace("\n", ",").split(",")
+        for value in candidates:
+            value = str(value or "").strip()
+            if not value:
+                continue
+            try:
+                return str(ipaddress.ip_address(value))
+            except ValueError:
+                continue
+        raise ProxyRotationError("出口 IP 接口没有返回有效 IP 地址")
