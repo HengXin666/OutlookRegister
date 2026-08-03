@@ -29,12 +29,20 @@ class TrafficRecorder:
         flow_id: str = "",
         proxy_session_id: str = "",
         proxy_exit_ip: str = "",
+        proxy_country_code: str = "",
+        identity_country_code: str = "",
+        browser_locale: str = "",
+        browser_timezone: str = "",
         worker_id: str = "",
     ) -> None:
         self._local.email = str(outlook_email or "").strip()
         self._local.flow_id = str(flow_id or "").strip()
         self._local.proxy_session_id = str(proxy_session_id or "").strip()
         self._local.proxy_exit_ip = str(proxy_exit_ip or "").strip()
+        self._local.proxy_country_code = str(proxy_country_code or "").strip()
+        self._local.identity_country_code = str(identity_country_code or "").strip()
+        self._local.browser_locale = str(browser_locale or "").strip()
+        self._local.browser_timezone = str(browser_timezone or "").strip()
         self._local.worker_id = str(worker_id or "").strip()
         self._local.captcha_attempts = 0
         self._local.started_at = datetime.now(timezone.utc)
@@ -203,6 +211,12 @@ class TrafficRecorder:
                     "flow_id": getattr(self._local, "flow_id", ""),
                     "proxy_session_id": getattr(self._local, "proxy_session_id", ""),
                     "proxy_exit_ip": getattr(self._local, "proxy_exit_ip", ""),
+                    "identity_country_code": getattr(
+                        self._local, "identity_country_code", ""
+                    ),
+                    "proxy_country_code": getattr(self._local, "proxy_country_code", ""),
+                    "browser_locale": getattr(self._local, "browser_locale", ""),
+                    "browser_timezone": getattr(self._local, "browser_timezone", ""),
                     "worker_id": getattr(self._local, "worker_id", ""),
                     "captcha_attempts": getattr(self._local, "captcha_attempts", 0),
                 }
@@ -218,6 +232,10 @@ class TrafficRecorder:
             "flow_id",
             "proxy_session_id",
             "proxy_exit_ip",
+            "identity_country_code",
+            "proxy_country_code",
+            "browser_locale",
+            "browser_timezone",
             "worker_id",
             "captcha_attempts",
             "started_at",

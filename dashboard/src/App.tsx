@@ -15,8 +15,11 @@ import {
   ListFilter,
   LoaderCircle,
   Mail,
+  PauseCircle,
+  Play,
   RefreshCw,
   Search,
+  Settings2,
   ShieldCheck,
   SlidersHorizontal,
   TimerReset,
@@ -24,6 +27,8 @@ import {
   X,
 } from "lucide-react"
 import { Badge, Button, Card, Progress } from "./components/ui"
+import { ConfigPanel } from "./components/ConfigPanel"
+import { WorkflowPanel } from "./components/WorkflowPanel"
 import { cn } from "./lib/utils"
 import { formatBytes, formatDate, formatDuration, formatPercent } from "./lib/utils"
 
@@ -32,17 +37,18 @@ type FilterKey = "all" | "complete" | "incomplete" | "failed"
 
 type StageState = { ok: boolean; at: string | null }
 type TrafficMetric = { key: string; label: string; bytes: number; human: string; estimated?: boolean }
-type AccountActionName = "authorize" | "import_hx_email"
+type AccountActionName = "authorize" | "import_hx_email" | "keepalive"
 type AccountActionState = {
   email: string
   action: AccountActionName
-  status: "queued" | "running" | "succeeded" | "failed"
+  status: "queued" | "running" | "succeeded" | "failed" | "manual_verification_required"
   message: string
   updated_at: string
 }
 type AccountActionMap = Record<string, Partial<Record<AccountActionName, AccountActionState>>>
 type Account = {
   email: string
+  identity_countries: string[]
   status: "complete" | "incomplete" | "failed"
   current_stage: string
   current_stage_label: string
@@ -191,19 +197,21 @@ function TrafficBars({ metrics, emptyLabel }: { metrics: TrafficMetric[]; emptyL
   )
 }
 
-function ActionStateRow({ state }: { state: AccountActionState }) {
+function ActionStateRow({ state, onResume }: { state: AccountActionState; onResume?: () => void }) {
   const running = state.status === "queued" || state.status === "running"
   const failed = state.status === "failed"
+  const waitingForOperator = state.status === "manual_verification_required"
   return (
     <div
       className={cn(
         "flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs",
-        failed ? "border-red-200 bg-red-50 text-red-700" : state.status === "succeeded" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-sky-200 bg-sky-50 text-sky-700",
+        failed ? "border-red-200 bg-red-50 text-red-700" : state.status === "succeeded" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : waitingForOperator ? "border-amber-200 bg-amber-50 text-amber-800" : "border-sky-200 bg-sky-50 text-sky-700",
       )}
       role="status"
     >
-      {running ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" /> : failed ? <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+      {running ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" /> : failed ? <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : waitingForOperator ? <PauseCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
       <span className="min-w-0 flex-1 break-words leading-5">{state.message}</span>
+      {waitingForOperator && onResume && <Button variant="ghost" className="h-7 shrink-0 px-2 text-[11px]" onClick={onResume} title="人工验证完成后继续"><Play className="h-3 w-3" />继续</Button>}
       <span className="shrink-0 text-[11px] opacity-70">{formatDate(state.updated_at)}</span>
     </div>
   )
@@ -213,16 +221,19 @@ function AccountDetail({
   account,
   actions,
   onAction,
+  onResume,
   onClose,
 }: {
   account: Account
   actions: Partial<Record<AccountActionName, AccountActionState>>
   onAction: (account: Account, action: AccountActionName) => void
+  onResume: (account: Account, action: AccountActionName) => void
   onClose: () => void
 }) {
-  const activeAction = Object.values(actions).find((state) => state && (state.status === "queued" || state.status === "running"))
+  const activeAction = Object.values(actions).find((state) => state && (state.status === "queued" || state.status === "running" || state.status === "manual_verification_required"))
   const canAuthorize = account.stages.registered.ok && !activeAction
   const canImport = account.stages.oauth_authorized.ok && !activeAction
+  const canKeepalive = account.stages.registered.ok && !activeAction
   const recoveryTone = account.recovery.bound ? "success" : account.recovery.email ? "warning" : "neutral"
   const recoveryStatus = account.recovery.bound ? "已确认绑定" : account.recovery.email ? "已选择，未确认" : "未记录"
   return (
@@ -236,6 +247,7 @@ function AccountDetail({
               <span className="text-xs text-slate-400">{account.current_stage_label}</span>
             </div>
             <h2 className="break-all text-lg font-semibold text-slate-900">{account.email}</h2>
+            {account.identity_countries.length > 0 && <div className="mt-2 flex flex-wrap items-center gap-1.5"><span className="text-xs text-slate-400">flow 国家</span>{account.identity_countries.map((country) => <Badge key={country} tone="teal">{country}</Badge>)}</div>}
           </div>
           <Button variant="ghost" className="h-8 w-8 shrink-0 px-0" onClick={onClose} title="关闭详情" aria-label="关闭详情">
             <X className="h-4 w-4" />
@@ -330,10 +342,20 @@ function AccountDetail({
                 {activeAction?.action === "import_hx_email" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
                 {account.stages.hx_email_imported.ok ? "重新加入 HX-Email" : "加入 HX-Email"}
               </Button>
+              <Button
+                variant="secondary"
+                className="w-full"
+                disabled={!canKeepalive}
+                onClick={() => onAction(account, "keepalive")}
+                title="使用账号面板执行保活登录"
+              >
+                {activeAction?.action === "keepalive" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                保活登录
+              </Button>
             </div>
             {Object.values(actions).length > 0 && (
               <div className="mt-3 space-y-2">
-                {Object.values(actions).filter((state): state is AccountActionState => Boolean(state)).map((state) => <ActionStateRow key={state.action} state={state} />)}
+                {Object.values(actions).filter((state): state is AccountActionState => Boolean(state)).map((state) => <ActionStateRow key={state.action} state={state} onResume={() => onResume(account, state.action)} />)}
               </div>
             )}
           </section>
@@ -410,6 +432,7 @@ function App() {
   const [filter, setFilter] = useState<FilterKey>("all")
   const [selected, setSelected] = useState<Account | null>(null)
   const [accountActions, setAccountActions] = useState<AccountActionMap>({})
+  const [activeView, setActiveView] = useState<"dashboard" | "workflows" | "config">("dashboard")
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -481,6 +504,17 @@ function App() {
     }
   }, [])
 
+  const resumeAccountAction = useCallback(async (account: Account, action: AccountActionName) => {
+    try {
+      const response = await fetch(`/api/accounts/${encodeURIComponent(account.email)}/actions/${action.replace(/_/g, "-")}/resume`, { method: "POST" })
+      const payload = (await response.json()) as { action?: AccountActionState; detail?: string }
+      if (!response.ok || !payload.action) throw new Error(payload.detail || `HTTP ${response.status}`)
+      setAccountActions((current) => ({ ...current, [account.email.toLowerCase()]: { ...current[account.email.toLowerCase()], [action]: payload.action! } }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "继续操作失败")
+    }
+  }, [])
+
   useEffect(() => {
     if (selected && data) {
       setSelected(data.accounts.find((account) => account.email === selected.email) || null)
@@ -506,6 +540,19 @@ function App() {
   }
 
   if (!data) return null
+  if (activeView === "config") {
+    return (
+      <div className="min-h-screen bg-[#f4f7f6]">
+        <header className="border-b border-slate-200 bg-white">
+          <div className="mx-auto flex max-w-[1480px] flex-wrap items-center justify-between gap-4 px-4 py-5 sm:px-6 lg:px-8">
+            <div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-md bg-slate-900 text-white"><Settings2 className="h-5 w-5" /></div><div><p className="text-xs font-semibold uppercase tracking-[0.12em] text-teal-700">Outlook Register / Settings</p><h1 className="mt-1 text-xl font-semibold text-slate-950">运行配置</h1></div></div>
+            <Button variant="ghost" onClick={() => setActiveView("dashboard")} title="返回任务面板"><Activity className="h-4 w-4" />任务面板</Button>
+          </div>
+        </header>
+        <main className="mx-auto max-w-[1480px] px-4 py-6 sm:px-6 lg:px-8"><ConfigPanel /></main>
+      </div>
+    )
+  }
   const summary = data.summary
   const totalTraffic = data.traffic.total_bytes
 
@@ -522,6 +569,11 @@ function App() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 p-1">
+              <Button variant={activeView === "dashboard" ? "primary" : "ghost"} className="h-8 px-2.5" onClick={() => setActiveView("dashboard")} title="查看账号任务">任务</Button>
+              <Button variant={activeView === "workflows" ? "primary" : "ghost"} className="h-8 px-2.5" onClick={() => setActiveView("workflows")} title="查看注册与保活工作流">工作流</Button>
+            </div>
+            <Button variant="ghost" className="h-8 px-2.5" onClick={() => setActiveView("config")} title="打开运行配置"><Settings2 className="h-4 w-4" />配置</Button>
             <div className="flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-xs text-slate-500"><span className={cn("h-2 w-2 rounded-full", autoRefresh ? "bg-emerald-500" : "bg-slate-300")} />{autoRefresh ? "每 5 秒刷新" : "手动刷新"}</div>
             <Button variant="ghost" onClick={() => setAutoRefresh((value) => !value)} title="切换自动刷新" aria-label="切换自动刷新"><TimerReset className="h-4 w-4" />{autoRefresh ? "暂停" : "自动刷新"}</Button>
             <Button variant="primary" onClick={() => void refresh()} disabled={refreshing} title="立即刷新" aria-label="立即刷新"><RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />刷新</Button>
@@ -530,6 +582,8 @@ function App() {
       </header>
 
       <main className="mx-auto max-w-[1480px] space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+        {activeView === "workflows" && <WorkflowPanel accounts={data.accounts} />}
+        {activeView === "dashboard" && <>
         <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <Card className="p-4 sm:col-span-2 xl:col-span-1">
             <div className="flex items-center gap-2 text-xs font-medium text-slate-500"><Gauge className="h-4 w-4 text-teal-600" />任务总量</div>
@@ -603,12 +657,14 @@ function App() {
           </Card>
           <div className="mt-3 flex items-center justify-between text-xs text-slate-400"><span>显示 {accounts.length} / {data.accounts.length} 个账号</span><span>点击行查看阶段时间与流量明细</span></div>
         </section>
+        </>}
       </main>
       {selected && (
         <AccountDetail
           account={selected}
           actions={accountActions[selected.email.toLowerCase()] || {}}
           onAction={(account, action) => void runAccountAction(account, action)}
+          onResume={(account, action) => void resumeAccountAction(account, action)}
           onClose={() => setSelected(null)}
         />
       )}

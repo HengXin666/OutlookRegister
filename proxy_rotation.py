@@ -20,6 +20,7 @@ class ProxyLease:
     session_id: str = ""
     session_scoped: bool = False
     exit_ip: str = ""
+    country_code: str = ""
 
 
 class RotatingProxyPool:
@@ -31,7 +32,7 @@ class RotatingProxyPool:
       1. 为当前窗口生成独立 session_id；
       2. 使用一个渠道 token 创建服务端逻辑会话；
       3. 将服务端签发的代理账号写入同一个 listener 地址；
-      4. 注册完成后按 session_id 切到配置的低成本线路，不关闭浏览器页面。
+      4. 严格模式下流程完成后保持 residential 路由，直到浏览器关闭并释放 session。
     """
 
     def __init__(self, config):
@@ -40,11 +41,13 @@ class RotatingProxyPool:
         self.max_rotate_retries = int(config.get("max_rotate_retries", 2))
         self.session_scoped = bool(config.get("session_scoped", True))
         self.post_registration_route = str(
-            config.get("post_registration_route", "direct")
+            config.get("post_registration_route", "residential")
         ).strip().lower()
         self.check_proxy = bool(config.get("check_proxy", False))
         self.exit_ip_endpoint = str(config.get("exit_ip_endpoint", "https://api.ipify.org?format=json"))
         self.verify_browser_exit_ip = bool(config.get("verify_browser_exit_ip", True))
+        self.require_country_echo = bool(config.get("require_country_echo", False))
+        self.country_code = str(config.get("country_code", "")).strip()
         self.required_pool_size = max(int(config.get("required_pool_size", 0)), 0)
         self._enforce_unique_exit_ip = bool(
             config.get("enforce_unique_exit_ip", self.check_proxy)
@@ -55,15 +58,24 @@ class RotatingProxyPool:
             token = str(entry.get("token", "")).strip()
             proxy = str(entry.get("proxy", "")).strip()
             if token and proxy:
-                self.entries.append({"token": token, "proxy": proxy})
+                entry_country = str(entry.get("country_code", "")).strip()
+                if self.country_code and entry_country and entry_country.casefold() != self.country_code.casefold():
+                    raise ProxyRotationError(
+                        "proxy_rotation.tokens 中的 country_code 必须与全局 country_code 一致"
+                    )
+                self.entries.append({
+                    "token": token,
+                    "proxy": proxy,
+                    "country_code": entry_country,
+                })
 
         if not self.base_url:
             raise ProxyRotationError("proxy_rotation.base_url 不能为空")
         if not self.entries:
             raise ProxyRotationError("proxy_rotation.tokens 至少需要配置一个 {token, proxy} 渠道")
-        if self.post_registration_route not in ("direct", "upstream"):
+        if self.post_registration_route not in ("residential", "direct", "upstream"):
             raise ProxyRotationError(
-                "proxy_rotation.post_registration_route 只支持 direct 或 upstream"
+                "proxy_rotation.post_registration_route 只支持 residential、direct 或 upstream"
             )
 
         self._session = requests.Session()
@@ -87,7 +99,7 @@ class RotatingProxyPool:
     def enforce_unique_exit_ip(self):
         return bool(getattr(self, "_enforce_unique_exit_ip", False))
 
-    def acquire_proxy(self):
+    def acquire_proxy(self, country_code=None):
         """
         为本次注册流程获取独立代理租约。
         session_scoped=true 时多个窗口可复用同一个 token 和 listener。
@@ -96,21 +108,44 @@ class RotatingProxyPool:
         """
         # Serialize allocation and verification so two concurrent workers cannot
         # both reserve the same observed exit IP between the check and insert.
+        requested_country = str(country_code or self.country_code).strip()
         with self._allocation_lock:
             with self._lock:
                 start_index = self._next_index % len(self.entries)
                 self._next_index += 1
 
+            eligible_entries = [
+                entry
+                for entry in self.entries
+                if not requested_country
+                or not entry.get("country_code")
+                or entry["country_code"].casefold() == requested_country.casefold()
+            ]
+            if requested_country and not eligible_entries:
+                raise ProxyRotationError(
+                    f"没有配置支持国家 {requested_country} 的 HX-ProxyGroup 渠道"
+                )
+
             errors = []
             for offset in range(len(self.entries)):
                 entry = self.entries[(start_index + offset) % len(self.entries)]
+                if entry not in eligible_entries:
+                    continue
                 lease = None
                 try:
                     if self.session_scoped:
-                        lease = self._create_session(entry)
+                        lease = self._create_session(entry, requested_country)
                     else:
+                        if requested_country:
+                            raise ProxyRotationError(
+                                "指定国家时必须启用 session_scoped，以固定国家约束"
+                            )
                         self._rotate(entry)
-                        lease = ProxyLease(proxy=entry["proxy"], token=entry["token"])
+                        lease = ProxyLease(
+                            proxy=entry["proxy"],
+                            token=entry["token"],
+                            country_code=entry.get("country_code", ""),
+                        )
                     if self.check_proxy:
                         exit_ip = self._verify(lease.proxy)
                         lease = replace(lease, exit_ip=exit_ip)
@@ -128,7 +163,12 @@ class RotatingProxyPool:
             raise ProxyRotationError("所有住宅代理渠道切换失败: " + " | ".join(errors))
 
     def switch_after_registration(self, lease):
-        """Move a completed flow to the configured route after its browser is closed."""
+        """Apply the configured post-flow route after the browser is closed."""
+        if self.post_registration_route == "residential":
+            # The flow already runs on this session's residential allocation.
+            # Keeping it avoids an unnecessary route mutation and preserves the
+            # same country/IP contract until the session is released.
+            return lease
         return self._switch_route(
             lease,
             self.post_registration_route,
@@ -253,11 +293,25 @@ class RotatingProxyPool:
             if self._active_exit_ips.get(lease.exit_ip) == owner:
                 del self._active_exit_ips[lease.exit_ip]
 
-    def _create_session(self, entry):
+    def _create_session(self, entry, country_code=""):
         session_id = uuid.uuid4().hex
+        entry_country = str(entry.get("country_code") or "").strip()
+        if (
+            country_code
+            and entry_country
+            and country_code.casefold() != entry_country.casefold()
+        ):
+            raise ProxyRotationError(
+                f"渠道只支持国家 {entry_country}，不能分配 {country_code}"
+            )
+        requested_country = str(
+            country_code or entry_country or ""
+        ).strip()
+        request_body = {"country_code": requested_country} if requested_country else None
         response = self._request(
             "PUT",
             f"/rot/{entry['token']}/sessions/{session_id}",
+            json=request_body,
         )
         if response.status_code != 200:
             raise ProxyRotationError(
@@ -269,6 +323,13 @@ class RotatingProxyPool:
             password = str(payload.get("proxy_password") or "")
             if not username or not password:
                 raise ProxyRotationError("创建窗口会话响应缺少代理账号或密码")
+            returned_country = str(payload.get("country_code") or "").strip()
+            if requested_country and returned_country and returned_country.casefold() != requested_country.casefold():
+                raise ProxyRotationError(
+                    f"HX-ProxyGroup 返回的国家与请求不一致: expected={requested_country}, actual={returned_country}"
+                )
+            if requested_country and not returned_country and self.require_country_echo:
+                raise ProxyRotationError("HX-ProxyGroup 未回显 country_code，无法确认国家约束")
             # The current sticky-session API allocates nodes on demand and
             # omits the legacy pool_size field. Keep the compatibility check
             # only when the server explicitly sends that field.
@@ -308,6 +369,7 @@ class RotatingProxyPool:
             token=entry["token"],
             session_id=session_id,
             session_scoped=True,
+            country_code=returned_country or requested_country,
         )
 
     def _request(self, method, path, **kwargs):

@@ -18,6 +18,7 @@ class FakeController:
         self.oauth_client_id = "client-id"
         self.hx_email_proxy_url = "http://persistent-hx-proxy"
         self.flow_hx_email = FakeFlowEmail(events)
+        self.identity_config = {}
 
     def set_proxy(self, proxy):
         self.events.append(("set_proxy", proxy))
@@ -80,8 +81,8 @@ class FakeProxyPool:
             exit_ip="203.0.113.30",
         )
 
-    def acquire_proxy(self):
-        self.events.append(("acquire_proxy",))
+    def acquire_proxy(self, country_code=None):
+        self.events.append(("acquire_proxy", country_code))
         return self.lease
 
     def switch_after_registration(self, lease):
@@ -142,7 +143,7 @@ class MainFlowIsolationTests(unittest.TestCase):
             events.index(("release", "session-1")),
         )
 
-    def test_hx_email_import_receives_only_the_persistent_hx_email_proxy(self):
+    def test_hx_email_import_receives_the_flow_proxy(self):
         events = []
         controller = FakeController(events)
         proxy_pool = FakeProxyPool(events)
@@ -159,8 +160,50 @@ class MainFlowIsolationTests(unittest.TestCase):
         import_event = next(event for event in events if event[0] == "hx_import")
         self.assertEqual(
             import_event[1]["proxy_url"],
-            "http://persistent-hx-proxy",
+            "http://flow-session-proxy",
         )
+
+    def test_flow_selects_one_country_and_passes_it_to_proxy_and_browser_context(self):
+        events = []
+        controller = FakeController(events)
+        controller.identity_config = {
+            "country_selection": "random",
+            "country_pool": [
+                {
+                    "country_code": "US",
+                    "browser_locale": "en-US",
+                    "timezone": "America/New_York",
+                },
+                {
+                    "country_code": "GB",
+                    "browser_locale": "en-GB",
+                    "timezone": "Europe/London",
+                },
+            ],
+        }
+        proxy_pool = FakeProxyPool(events)
+
+        with patch("main.select_identity_profile") as select_profile, patch(
+            "main.random_email", return_value="flow-user"
+        ), patch(
+            "main.generate_strong_password", return_value="password"
+        ), patch(
+            "main.get_access_token", return_value=(False, False, False)
+        ):
+            select_profile.return_value = {
+                "country_code": "GB",
+                "browser_locale": "en-GB",
+                "timezone": "Europe/London",
+            }
+            result = process_single_flow(controller, proxy_pool)
+
+        self.assertFalse(result)
+        select_profile.assert_called_once_with(controller.identity_config)
+        self.assertIn(("acquire_proxy", "GB"), events)
+        context = next(event[1] for event in events if event[0] == "flow_context")
+        self.assertEqual(context["flow_country_code"], "GB")
+        self.assertEqual(context["browser_locale"], "en-GB")
+        self.assertEqual(context["browser_timezone"], "Europe/London")
 
 
 if __name__ == "__main__":

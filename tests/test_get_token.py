@@ -8,6 +8,7 @@ from get_token import (
     get_proxy,
     get_access_token,
     handle_oauth2_form,
+    refresh_oauth_token,
 )
 
 
@@ -72,6 +73,77 @@ class OAuthProxyTests(unittest.TestCase):
 
     def test_missing_proxy_disables_environment_proxy_fallback(self):
         self.assertEqual(get_proxy(), {"http": None, "https": None})
+
+    @patch("get_token.ConfigStore")
+    @patch("get_token.requests.Session")
+    def test_refresh_probe_uses_explicit_flow_proxy_and_updates_token(
+        self,
+        session_factory,
+        config_store,
+    ):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b"token-response"
+        response.json.return_value = {
+            "access_token": "new-access",
+            "refresh_token": "rotated-refresh",
+            "expires_in": 3600,
+        }
+        session = session_factory.return_value
+        session.post.return_value = response
+        config_store.return_value.read.return_value = {
+            "oauth2": {
+                "client_id": "configured-client",
+                "tenant": "consumers",
+                "Scopes": ["offline_access", "https://graph.microsoft.com/Mail.Read"],
+            }
+        }
+        recorder = MagicMock()
+
+        result = refresh_oauth_token(
+            "old-refresh",
+            proxy="http://flow-session-proxy",
+            traffic_recorder=recorder,
+            email="user@outlook.com",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["refresh_token"], "rotated-refresh")
+        self.assertFalse(session.trust_env)
+        self.assertEqual(
+            session.post.call_args.kwargs["proxies"],
+            {"http": "http://flow-session-proxy", "https": "http://flow-session-proxy"},
+        )
+        recorder.record_http.assert_called_once()
+        self.assertEqual(
+            recorder.record_http.call_args.args[:2],
+            ("oauth_token_refresh_probe", "oauth_token"),
+        )
+
+    @patch("get_token.ConfigStore")
+    @patch("get_token.requests.Session")
+    def test_refresh_probe_reports_invalid_grant_without_token_values(
+        self,
+        session_factory,
+        config_store,
+    ):
+        response = MagicMock()
+        response.status_code = 400
+        response.content = b"invalid"
+        response.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": "The refresh token is invalid",
+        }
+        session_factory.return_value.post.return_value = response
+        config_store.return_value.read.return_value = {
+            "oauth2": {"client_id": "configured-client", "Scopes": []}
+        }
+
+        result = refresh_oauth_token("old-refresh", proxy="http://flow-session-proxy")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "invalid_grant")
+        self.assertNotIn("old-refresh", str(result))
 
     @patch("get_token._try_get_access_token", return_value=("refresh", "access", 123))
     def test_page_delay_is_forwarded_to_each_token_attempt(self, try_get_access_token):

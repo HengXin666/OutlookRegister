@@ -5,9 +5,11 @@ import random
 import re
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import unquote, urlsplit, urlunsplit
 from faker import Faker
 from abc import ABC, abstractmethod
+from config_store import ConfigStore
 from hx_email_client import HXEmailClient, HXEmailError
 from traffic_tracker import TrafficRecorder
 
@@ -42,8 +44,7 @@ class BaseBrowserController(ABC):
     """
 
     def __init__(self):
-        with open('config.json', 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = ConfigStore(Path(__file__).resolve().parent.parent / 'config.json').read()
         self.wait_time = data['bot_protection_wait'] * 1000
         self.max_captcha_retries = data['max_captcha_retries']
         self.enable_oauth2 = data["oauth2"]['enable_oauth2']
@@ -54,6 +55,21 @@ class BaseBrowserController(ABC):
         )
         self.prevent_direct_network_leaks = bool(
             data.get('prevent_direct_network_leaks', True)
+        )
+        identity = data.get('identity') or {}
+        self.identity_config = dict(identity)
+        self.country_code = str(identity.get('country_code') or '').strip()
+        self.browser_locale = str(
+            identity.get('browser_locale')
+            or identity.get('locale')
+            or 'en-US'
+        ).strip()
+        self.browser_timezone = str(identity.get('timezone') or '').strip()
+        self.require_dynamic_residential_ip = bool(
+            identity.get(
+                'require_dynamic_residential_ip',
+                self.strict_isolation,
+            )
         )
         self.email_suffix = data['email_suffix']
         self.results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Results')
@@ -90,12 +106,28 @@ class BaseBrowserController(ABC):
         flow_id,
         proxy_session_id="",
         proxy_exit_ip="",
+        proxy_country_code="",
         worker_id="",
+        browser_locale="",
+        browser_timezone="",
+        flow_country_code="",
     ):
         self.thread_local.flow_id = str(flow_id or "")
         self.thread_local.proxy_session_id = str(proxy_session_id or "")
         self.thread_local.proxy_exit_ip = str(proxy_exit_ip or "")
+        self.thread_local.flow_country_code = str(
+            flow_country_code or proxy_country_code or getattr(self, "country_code", "") or ""
+        ).strip()
+        self.thread_local.proxy_country_code = str(
+            proxy_country_code or self.thread_local.flow_country_code or ""
+        ).strip()
         self.thread_local.worker_id = str(worker_id or "")
+        self.thread_local.browser_locale = str(
+            browser_locale or getattr(self, "browser_locale", "") or ""
+        ).strip()
+        self.thread_local.browser_timezone = str(
+            browser_timezone or getattr(self, "browser_timezone", "") or ""
+        ).strip()
 
         previous_client = getattr(self.thread_local, 'hx_email', None)
         if previous_client is not None:
@@ -122,7 +154,11 @@ class BaseBrowserController(ABC):
             "flow_id",
             "proxy_session_id",
             "proxy_exit_ip",
+            "flow_country_code",
+            "proxy_country_code",
             "worker_id",
+            "browser_locale",
+            "browser_timezone",
             "captcha_attempts",
             "proxy",
             "last_pos",
@@ -152,6 +188,10 @@ class BaseBrowserController(ABC):
             'flow_id': getattr(self.thread_local, 'flow_id', ''),
             'proxy_session_id': getattr(self.thread_local, 'proxy_session_id', ''),
             'proxy_exit_ip': getattr(self.thread_local, 'proxy_exit_ip', ''),
+            'identity_country_code': getattr(self.thread_local, 'flow_country_code', ''),
+            'proxy_country_code': getattr(self.thread_local, 'proxy_country_code', ''),
+            'browser_locale': getattr(self.thread_local, 'browser_locale', ''),
+            'browser_timezone': getattr(self.thread_local, 'browser_timezone', ''),
             'worker_id': getattr(self.thread_local, 'worker_id', ''),
             'attempt': attempts,
         }
@@ -165,11 +205,52 @@ class BaseBrowserController(ABC):
         return attempts
 
     def get_proxy(self):
-        """返回当前线程的代理地址,未设置时回退到 config.json 的静态 proxy。"""
-        return getattr(self.thread_local, 'proxy', None) or self.proxy
+        """Return the flow lease, or no route when dynamic mode is required."""
+        flow_proxy = getattr(self.thread_local, 'proxy', None)
+        if flow_proxy:
+            return flow_proxy
+        if getattr(self, "require_dynamic_residential_ip", False):
+            return None
+        return getattr(self, "proxy", None)
+
+    def browser_context_options(self):
+        options = {}
+        browser_locale = str(
+            getattr(
+                self.thread_local,
+                'browser_locale',
+                getattr(self, 'browser_locale', ''),
+            )
+            or ''
+        ).strip()
+        browser_timezone = str(
+            getattr(
+                self.thread_local,
+                'browser_timezone',
+                getattr(self, 'browser_timezone', ''),
+            )
+            or ''
+        ).strip()
+        if browser_locale:
+            options['locale'] = browser_locale
+        if browser_timezone:
+            options['timezone_id'] = browser_timezone
+        return options
+
+    def new_browser_context(self, browser):
+        options = self.browser_context_options()
+        return browser.new_context(**options) if options else browser.new_context()
 
     def browser_launch_args(self):
-        args = ['--lang=zh-CN']
+        browser_locale = str(
+            getattr(
+                self.thread_local,
+                'browser_locale',
+                getattr(self, 'browser_locale', ''),
+            )
+            or ''
+        ).strip()
+        args = [f'--lang={browser_locale}'] if browser_locale else []
         if self.prevent_direct_network_leaks:
             args.extend(
                 (
@@ -314,7 +395,7 @@ class BaseBrowserController(ABC):
             self.active_resources.append((owned_playwright, browser))
         context = None
         try:
-            context = browser.new_context()
+            context = self.new_browser_context(browser)
             cookies = source_page.context.cookies()
             if cookies:
                 context.add_cookies(cookies)
@@ -567,6 +648,10 @@ class BaseBrowserController(ABC):
             'flow_id': getattr(self.thread_local, 'flow_id', ''),
             'proxy_session_id': getattr(self.thread_local, 'proxy_session_id', ''),
             'proxy_exit_ip': getattr(self.thread_local, 'proxy_exit_ip', ''),
+            'identity_country_code': getattr(self.thread_local, 'flow_country_code', ''),
+            'proxy_country_code': getattr(self.thread_local, 'proxy_country_code', ''),
+            'browser_locale': getattr(self.thread_local, 'browser_locale', ''),
+            'browser_timezone': getattr(self.thread_local, 'browser_timezone', ''),
             'worker_id': getattr(self.thread_local, 'worker_id', ''),
             'captcha_attempts': getattr(self.thread_local, 'captcha_attempts', 0),
             **result,
@@ -586,6 +671,10 @@ class BaseBrowserController(ABC):
             'flow_id': getattr(self.thread_local, 'flow_id', ''),
             'proxy_session_id': getattr(self.thread_local, 'proxy_session_id', ''),
             'proxy_exit_ip': getattr(self.thread_local, 'proxy_exit_ip', ''),
+            'identity_country_code': getattr(self.thread_local, 'flow_country_code', ''),
+            'proxy_country_code': getattr(self.thread_local, 'proxy_country_code', ''),
+            'browser_locale': getattr(self.thread_local, 'browser_locale', ''),
+            'browser_timezone': getattr(self.thread_local, 'browser_timezone', ''),
             'worker_id': getattr(self.thread_local, 'worker_id', ''),
             'captcha_attempts': getattr(self.thread_local, 'captcha_attempts', 0),
         }

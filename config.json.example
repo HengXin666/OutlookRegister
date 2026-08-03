@@ -5,6 +5,33 @@
     "strict_isolation": true,
     "isolate_hx_email_group": true,
     "prevent_direct_network_leaks": true,
+    "identity": {
+        "country_selection": "random",
+        "country_pool": [
+            {
+                "country_code": "US",
+                "browser_locale": "en-US",
+                "timezone": "America/New_York"
+            },
+            {
+                "country_code": "GB",
+                "browser_locale": "en-GB",
+                "timezone": "Europe/London"
+            },
+            {
+                "country_code": "DE",
+                "browser_locale": "de-DE",
+                "timezone": "Europe/Berlin"
+            }
+        ],
+        "require_dynamic_residential_ip": true
+    },
+    "keepalive": {
+        "login_timeout_seconds": 180,
+        "manual_verification_timeout_seconds": 300,
+        "verify_existing_oauth_token": true,
+        "auto_import_hx_email": true
+    },
     "bot_protection_wait": 16,
     "max_captcha_retries": 16,
     "concurrent_flows": 3,
@@ -49,15 +76,17 @@
         "timeout_seconds": 10,
         "max_rotate_retries": 6,
         "session_scoped": true,
-        "post_registration_route": "direct",
+        "post_registration_route": "residential",
         "check_proxy": true,
         "enforce_unique_exit_ip": true,
         "verify_browser_exit_ip": true,
+        "require_country_echo": true,
         "exit_ip_endpoint": "https://api.ipify.org?format=json",
         "tokens": [
             {
                 "token": "",
-                "proxy": ""
+                "proxy": "",
+                "country_code": ""
             }
         ]
     },

@@ -6,7 +6,10 @@ import hashlib
 import secrets
 import requests
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode
+
+from config_store import ConfigStore
 
 
 class OAuthRecoveryChallengeError(RuntimeError):
@@ -37,6 +40,121 @@ def get_proxy(proxy=None):
     if proxy:
         return {"http": proxy, "https": proxy}
     return {"http": None, "https": None}
+
+
+def refresh_oauth_token(
+    refresh_token,
+    *,
+    client_id=None,
+    tenant=None,
+    scopes=None,
+    proxy=None,
+    traffic_recorder=None,
+    email="",
+):
+    """Probe and refresh an existing OAuth token through the current flow proxy.
+
+    A non-empty local refresh-token file is not proof that Microsoft still
+    accepts the token. This request is the reliable ``missing/expired/invalid``
+    decision point used by the keepalive workflow. ``trust_env`` is disabled so
+    a system proxy cannot silently replace the HX-ProxyGroup session.
+    """
+
+    try:
+        config = ConfigStore(Path(__file__).resolve().parent / "config.json").read()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "config_error",
+            "error_description": str(exc),
+        }
+    oauth_config = config.get("oauth2") or {}
+    selected_client_id = str(client_id or oauth_config.get("client_id") or "").strip()
+    selected_tenant = str(tenant or oauth_config.get("tenant") or "consumers").strip()
+    configured_scopes = scopes if scopes is not None else oauth_config.get("Scopes") or []
+    if isinstance(configured_scopes, str):
+        scope_value = configured_scopes.strip()
+    else:
+        scope_value = " ".join(str(item).strip() for item in configured_scopes if str(item).strip())
+    if not selected_client_id:
+        return {
+            "ok": False,
+            "error": "missing_client_id",
+            "error_description": "oauth2.client_id 尚未配置",
+        }
+    if not str(refresh_token or "").strip():
+        return {
+            "ok": False,
+            "error": "missing_refresh_token",
+            "error_description": "refresh token 为空",
+        }
+
+    payload = {
+        "client_id": selected_client_id,
+        "grant_type": "refresh_token",
+        "refresh_token": str(refresh_token).strip(),
+    }
+    if scope_value:
+        payload["scope"] = scope_value
+    endpoint = f"https://login.microsoftonline.com/{selected_tenant}/oauth2/v2.0/token"
+    session = requests.Session()
+    session.trust_env = False
+    response = None
+    try:
+        response = session.post(
+            endpoint,
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            proxies=get_proxy(proxy),
+            timeout=30,
+        )
+        try:
+            token_data = response.json()
+        except ValueError:
+            token_data = {}
+    except requests.RequestException as exc:
+        token_data = {
+            "error": "network_error",
+            "error_description": str(exc),
+        }
+    finally:
+        session.close()
+
+    if traffic_recorder is not None and response is not None:
+        response_content = getattr(response, "content", b"")
+        if not isinstance(response_content, bytes):
+            response_content = str(getattr(response, "text", "")).encode("utf-8")
+        traffic_recorder.record_http(
+            "oauth_token_refresh_probe",
+            "oauth_token",
+            bytes_sent=len(urlencode(payload).encode("utf-8")),
+            bytes_received=len(response_content),
+            email=email,
+        )
+
+    access_token = str(token_data.get("access_token") or "").strip()
+    if response is not None and response.status_code < 400 and access_token:
+        try:
+            expires_in = max(1, int(token_data.get("expires_in") or 3600))
+        except (TypeError, ValueError):
+            expires_in = 3600
+        return {
+            "ok": True,
+            "refresh_token": str(token_data.get("refresh_token") or refresh_token).strip(),
+            "access_token": access_token,
+            "expires_at": str(datetime.now().timestamp() + expires_in),
+            "client_id": selected_client_id,
+        }
+
+    return {
+        "ok": False,
+        "error": str(token_data.get("error") or f"http_{getattr(response, 'status_code', 0)}"),
+        "error_description": str(
+            token_data.get("error_description")
+            or token_data.get("error")
+            or "OAuth refresh token 探针失败"
+        ),
+    }
 
 def generate_code_verifier(length=128):
     alphabet = string.ascii_letters + string.digits + '-._~'
@@ -182,8 +300,7 @@ def _try_get_access_token(
     recovery_challenge_handler=None,
     page_delay_ms=0,
 ):
-    with open('config.json', 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    data = ConfigStore(Path(__file__).resolve().parent / 'config.json').read()
     SCOPES = data['oauth2']['Scopes']
     client_id = data['oauth2']['client_id']
     redirect_url = data['oauth2']['redirect_url']

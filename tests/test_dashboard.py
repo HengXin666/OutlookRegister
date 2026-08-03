@@ -56,6 +56,7 @@ class DashboardStoreTests(unittest.TestCase):
                     "stage": "residential_registration",
                     "source": "residential_browser",
                     "bytes": 100,
+                    "identity_country_code": "DE",
                 },
                 {
                     "timestamp": "2026-08-01T00:00:26+00:00",
@@ -89,6 +90,7 @@ class DashboardStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["stages"][0]["average_seconds"], 5.0)
         self.assertEqual(snapshot["traffic"]["total_bytes"], 300)
         self.assertEqual(snapshot["accounts"][0]["traffic"]["total_bytes"], 300)
+        self.assertEqual(snapshot["accounts"][0]["identity_countries"], ["DE"])
         self.assertTrue(snapshot["accounts"][0]["recovery"]["bound"])
         self.assertEqual(
             snapshot["accounts"][0]["recovery"]["email"],

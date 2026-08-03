@@ -4,12 +4,12 @@ Outlook 注册机
 选择器经常更新，不保证时效性，自行测试。 
 
 - 模拟人类填表操作  
-- 自动过验证码  
+- 遇到需要人工完成的验证时暂停，并由面板继续
 - 注册成功  
 
 设置相关：  
 1.playwright使用性较差,如果使用playwright，则需要自行寻找指纹浏览器并填写绝对路径。  
-2.如果使用patchright,且不需要Oauth2，则只需要更改代理地址.  
+2.推荐使用patchright；批量流程不再切换本地直连或静态代理，而是由 HX-ProxyGroup 提供动态住宅会话。
 3.`Bot_protection_wait`单位为秒。  
 4.`client_id`与`redirect_url`可以前往[Azure](https://azure.microsoft.com/zh-cn?OCID=cmmyhidqdn5_brandzone__EFID__)注册获取，不需要Oauth2可留空。  
 5.`client_id`与`redirect_url`格式通常类似于`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`和`http://localhost:8000`。  
@@ -17,26 +17,36 @@ Outlook 注册机
 
 使用教程：  
 1.先复制安全模板：`cp config.json.example config.json`。`config.json`和`Results/`只保存在本地，分别用于运行配置和账号、令牌、日志等运行产物，不要使用`git add -f`提交。  
-2.使用本地代理IP**搭建代理池**，在`config.json`填写你的代理地址。  
-3.在设置中调整并发与最大注册量。  
-4.如果你需要Oauth2，请在`config.json`中修改`"enable_oauth2"`的值为`true`并填写`Scopes`、`client_id`与`redirect_url`。  
+2.不要配置本地代理或顶层静态`proxy`。在面板的「运行配置」中填写`identity.country_pool`：每行配置国家代码、对应的浏览器语言和 IANA 时区，并保持`country_selection=random`。HX-ProxyGroup 渠道必须覆盖这个国家池；如果渠道只支持单国，就为该国单独配置渠道 token。
+3.在面板的「工作流」页提交批量注册或批量保活；批量操作统一从面板启动，不直接使用脚本作为批量入口。
+4.如果你需要Oauth2，请在配置页启用`oauth2.enable_oauth2`并填写`Scopes`、`client_id`与`redirect_url`。
 5.安装相关依赖`pip install -r requirements.txt`，如果未安装相关浏览器，使用`patchright install chromium`。  
-6.视运行脚本填写或留空`browser_path`。  
-7.`python main.py`。  
+6.视运行环境填写或留空`browser_path`。
 
 HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
 1. 启动 HX-ProxyGroup（`./run.sh`，默认控制面 `http://127.0.0.1:19090`），登录后左侧边栏进入「住宅代理」。
 2. 「供应商」页：先创建住宅代理供应商——BestProxy 预设已内置官方语法，或选择「API 提取」模式直接填 BestProxy 提取链接（`https://bestproxy.com/api/v2/<提取ID>?app_key=...`，无需账号密码）。保存后用「测试连接」确认能取到出口 IP。
 3. 「渠道」页：为该供应商创建渠道。要支持「每个会话固定 IP、换会话才换 IP」请选 **sticky** 模式；选 passthrough 则透传给上游自行轮换。渠道会生成 listener 入口地址（HTTP/SOCKS5，可带账密）与公共轮换地址 `POST /rot/<token>/next`，页面可一键复制。
-4. 在`config.json`的`proxy_rotation`中填写`base_url`（控制面地址）与`tokens`，每个渠道一组`{"token": "...", "proxy": "http://用户:密码@主机:端口"}`，token 与入口地址从渠道详情复制。
-5. 将`"enabled"`和`"session_scoped"`设为`true`，同时保留`"check_proxy": true`、`"enforce_unique_exit_ip": true`和`"verify_browser_exit_ip": true`。每个窗口会调用`PUT /rot/<token>/sessions/<session_id>`申请独立住宅出口；旧模式`session_scoped=false`才会调用全局`POST /rot/<token>/next`。
+4. 在`config.json`的`proxy_rotation`中填写`base_url`（控制面地址）与`tokens`，每个渠道一组`{"token": "...", "proxy": "http://用户:密码@主机:端口"}`，token 与入口地址从渠道详情复制。渠道支持整个国家池时省略 token 项的`country_code`；固定单国渠道则填写对应国家代码，客户端会按 flow 选择匹配渠道。
+5. 将`"enabled"`和`"session_scoped"`设为`true`，同时保留`"check_proxy": true`、`"enforce_unique_exit_ip": true`、`"verify_browser_exit_ip": true`和`"require_country_echo": true`。每个窗口会调用`PUT /rot/<token>/sessions/<session_id>`申请独立住宅出口；旧模式`session_scoped=false`才会调用全局`POST /rot/<token>/next`。
 6. 一个渠道 token 和一个 Listener 端口即可承载多个并行窗口。客户端会为每个窗口创建独立`session_id`和代理账号，不需要按`concurrent_flows`重复创建渠道。
-7. 关闭`proxy_rotation`（`"enabled": false`）时仍使用`config.json`中的静态`proxy`。
+7. 动态住宅严格模式下不能关闭`proxy_rotation`，也不能使用静态`proxy`、`direct`或`upstream`路由。
 8. `check_proxy`会通过代理请求`exit_ip_endpoint`确认出口；启用`enforce_unique_exit_ip`后，活动窗口检测到相同出口 IP 会直接拒绝，不会让两个任务并行使用同一出口。
 
-顶层`proxy`仅在未启用代理池时作为静态回退；启用代理池后，注册、OAuth 浏览器和 token 交换都会使用当前 flow 的代理租约。HX-Email 的控制 API 仍访问本地配置的服务地址，导入账号时会为每个 flow 使用独立分组；分组使用的是 `recovery_email.hx_email.proxy_url` 持久代理，不会写入流程结束即释放的临时 session。
+顶层`proxy`不参与严格动态住宅运行。启用住宅会话后，注册、密保、OAuth 浏览器和 token 交换都会使用当前 flow 的代理租约；同一个 flow 从头到尾固定 session、国家、浏览器语言、时区和出口 IP，另一个 flow 才会重新随机选择国家并申请会话。选中的国家、语言、时区、session 和出口 IP 会写入检查点及流量记录。HX-Email 控制 API 仍访问配置的服务地址，导入账号使用独立分组；控制面本身不会进入 HX-ProxyGroup 的实际代理转发路径。
 
-并行会话与切流说明：每个注册线程调用`PUT /rot/<token>/sessions/<session_id>`取得独立代理账号，在同一个端口上通过`IN-USER`路由到不同住宅 IP。注册、密保和 OAuth 会贯穿使用同一个 flow 代理；只有浏览器流程全部结束后才会执行`post_registration_route`切换。默认使用`direct`，避免在 Microsoft 流程中途从住宅线路切到公共 upstream。`direct`表示 HX-ProxyGroup 服务器物理出口，`upstream`表示住宅供应商配置的普通上游代理组。当前 sticky API 按需分配住宅节点，不预建`pool_size`；请将供应商的`max_concurrent_sessions`设置为不小于住宅并发数，容量耗尽时服务端会返回冲突错误。
+并行会话与切流说明：每个 flow 开始时从`identity.country_pool`随机选一个 profile，然后调用`PUT /rot/<token>/sessions/<session_id>`并提交该 profile 的`country_code`，在同一个端口上通过`IN-USER`路由到独立住宅 IP。服务端回显并固定该国家；后续冲突国家请求会被拒绝。注册、密保、OAuth 和完成后的 HX-Email 导入贯穿使用同一个 flow 身份；`post_registration_route`固定为`residential`，即不切到直连或普通上游。当前 sticky API 按需分配住宅节点，不预建`pool_size`；请将供应商的`max_concurrent_sessions`设置为不小于住宅并发数，容量耗尽时服务端会返回冲突错误。旧版`identity.country_code`、`browser_locale`和`timezone`仍兼容，但配置国家池后以国家池为准。
+
+完全注册流程：面板提交任务后依次执行「注册」→「填写密保邮箱」→「获取 OAuth 授权」→「加入 HX-Email」。每个阶段会写入检查点；后续阶段失败不会丢失已生成的账号凭据。
+
+完全保活流程：在面板选择账号和「账号密码登录」或「密保邮箱取件登录」→如出现按压/人工验证，浏览器保持打开并在面板点击「继续」→如缺少授权则补充 OAuth→如配置启用则加入 HX-Email。整个流程复用同一个住宅 session，人工验证超时后需要重新提交该账号的保活任务。
+
+保活的“如有”判定基准：
+1. 人工验证：页面状态机检测可见的`#px-captcha`、`hsprotect`/验证 iframe 或多语言安全挑战文本；点击面板“继续”后会重新扫描，挑战仍在时不会继续后续阶段。
+2. 补充授权：先读取本地 refresh token；默认通过当前 HX-ProxyGroup flow 向 Microsoft token endpoint 做一次实际 refresh 探针。缺失、空值或探针返回`invalid_grant`等失败时，才使用当前已登录浏览器会话补充 OAuth/Graph 授权，并在失败后尝试同一 flow 的独立浏览器 Context。探针和 token 交换都关闭系统代理环境继承。
+3. 加入 HX-Email：只有拿到可用 refresh token 且`keepalive.auto_import_hx_email=true`才执行。HX-Email 导入完成后会重新查询账号、写入账号信息和邮件池，并调用 refresh 接口验证授权；这些步骤全部成功后才写入`hx_email_imported`检查点。
+
+与 `reg-factory` 的对应关系：其“解锁”部分对应这里的登录状态机，其“提取 Graph”对应这里的浏览器 OAuth/Graph 授权和 refresh 探针，其账号池回写对应这里的检查点、`outlook_token.txt`和 HX-Email 导入。没有复制它的 EZCaptcha 自动绕过、Clash/direct 回退或不受国家约束的代理池；当前 flow 始终由 HX-ProxyGroup 固定国家、session 和出口 IP。
 
 备用邮箱与 OAuth2：
 1. 在 `recovery_email.hx_email` 中配置 HX-Email 地址及认证信息。推荐同时配置 `api_key`、`username`、`password`；也可通过 `HX_EMAIL_API_KEY`、`HX_EMAIL_USERNAME`、`HX_EMAIL_PASSWORD` 环境变量提供，避免把凭据写入文件。`proxy_url` 仅填写 HX-Email 服务长期可访问的持久代理，不要填写注册 flow 的临时 session 代理。
@@ -54,8 +64,9 @@ HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
 任务状态面板：
 1. 首次构建前端：`cd dashboard && npm install && npm run build`。
 2. 在项目根目录启动面板：`uv run uvicorn dashboard_server:app --host 127.0.0.1 --port 8765`。
-3. 浏览器打开 `http://127.0.0.1:8765/`，可查看四个完成状态、账号筛选、阶段耗时和平均耗时。账号详情中的“补充授权”和“加入 HX-Email”可继续处理已注册但后续阶段失败的账号；操作在服务端后台线程执行，页面不会读取账号密码或 token。
-4. 新增的 `Results/traffic_usage.jsonl` 会按住宅注册、注册后初始化、密保验证、OAuth 和 HX-Email API 记录观测流量；历史检查点没有流量字段，需重新运行任务后才会显示。
+3. 浏览器打开`http://127.0.0.1:8765/`，在「工作流」页执行批量注册/保活，在「运行配置」页修改并持久化配置。配置保存后通过 SSE 实时通知其他面板窗口，新任务会读取新版本。
+4. 账号详情中的“补充授权”“加入 HX-Email”和“保活登录”可继续处理单个账号；操作在服务端后台线程执行，页面不会读取账号密码或 token。
+5. 新增的`Results/traffic_usage.jsonl`会按住宅注册、密保验证、OAuth 和 HX-Email API 记录观测流量；历史检查点没有流量字段，需重新运行任务后才会显示。
 
 流量是程序观测到的网络字节，不等同于代理供应商账单流量；浏览器优先使用 CDP 统计响应字节，不支持时会使用响应头估算。新记录还会保存 flow ID、代理 session ID 和预检出口 IP，便于核对并行任务是否串用身份。每次按压验证码尝试另写入 `Results/captcha_attempts.jsonl`，可按 flow、session 和出口 IP 对照尝试次数。
 

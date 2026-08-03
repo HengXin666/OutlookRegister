@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import re
 from collections import defaultdict
@@ -11,16 +12,19 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from dashboard_actions import DashboardActionError, DashboardActionRunner
+from config_store import ConfigError, ConfigStore
+from workflow_runner import WorkflowError, WorkflowRunner
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_RESULTS_DIR = PROJECT_ROOT / "Results"
 RESULTS_DIR = Path(os.getenv("OUTLOOK_RESULTS_DIR", str(DEFAULT_RESULTS_DIR))).expanduser()
+CONFIG_STORE = ConfigStore(PROJECT_ROOT / "config.json")
 CHECKPOINTS_FILE = "account_checkpoints.jsonl"
 RECOVERY_FILE = "recovery_email_status.jsonl"
 TRAFFIC_FILE = "traffic_usage.jsonl"
@@ -63,6 +67,7 @@ FAILURE_STAGES = {
     "post_registration_failed",
     "oauth_launch_failed",
     "oauth_failed",
+    "oauth_token_invalid",
     "hx_email_import_failed",
 }
 
@@ -176,6 +181,7 @@ def _account_record(email: str) -> dict[str, Any]:
         "email": email,
         "events": [],
         "recovery_events": [],
+        "identity_countries": [],
         "first_seen": None,
         "last_seen": None,
         "stage_timestamps": {},
@@ -190,6 +196,19 @@ def _add_account(accounts: dict[str, dict[str, Any]], email: str) -> dict[str, A
     if key not in accounts:
         accounts[key] = _account_record(email)
     return accounts[key]
+
+
+def _remember_identity_country(
+    account: dict[str, Any],
+    record: dict[str, Any],
+) -> None:
+    country = str(
+        record.get("identity_country_code")
+        or record.get("proxy_country_code")
+        or ""
+    ).strip()
+    if country and country not in account["identity_countries"]:
+        account["identity_countries"].append(country)
 
 
 def _event_time(record: dict[str, Any], index: int) -> tuple[datetime | None, int]:
@@ -247,6 +266,7 @@ def _build_traffic(records: list[dict[str, Any]], accounts: dict[str, dict[str, 
             by_account[key] += byte_count_int
             by_account_stage[(key, stage)] += byte_count_int
             account = _add_account(accounts, email)
+            _remember_identity_country(account, record)
             account["traffic_events"].append(
                 {
                     "index": index,
@@ -331,6 +351,7 @@ class DashboardStore:
             if not email:
                 continue
             account = _add_account(accounts, email)
+            _remember_identity_country(account, record)
             timestamp = _parse_timestamp(record.get("timestamp"))
             stage = str(record.get("stage") or "unknown").strip() or "unknown"
             account["events"].append(
@@ -348,6 +369,7 @@ class DashboardStore:
             if not email:
                 continue
             account = _add_account(accounts, email)
+            _remember_identity_country(account, record)
             timestamp = _parse_timestamp(record.get("timestamp"))
             account["recovery_events"].append(
                 {
@@ -541,6 +563,7 @@ class DashboardStore:
         ]
         return {
             "email": account["email"],
+            "identity_countries": list(account.get("identity_countries", [])),
             "status": "complete" if all(item["ok"] for item in stages.values()) else "failed" if failed else "incomplete",
             "current_stage": current_stage,
             "current_stage_label": STAGE_LABELS.get(current_stage, current_stage),
@@ -607,6 +630,7 @@ class DashboardStore:
 
 app = FastAPI(title="Outlook Register Dashboard", version="1.0.0")
 ACTION_RUNNER = DashboardActionRunner(PROJECT_ROOT, RESULTS_DIR)
+WORKFLOW_RUNNER = WorkflowRunner(PROJECT_ROOT, results_dir=RESULTS_DIR)
 
 
 @app.get("/api/dashboard")
@@ -616,7 +640,49 @@ def get_dashboard() -> dict[str, Any]:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "results_dir": str(RESULTS_DIR)}
+    return {
+        "ok": True,
+        "results_dir": str(RESULTS_DIR),
+        "config_revision": CONFIG_STORE.revision(),
+        "config_runtime_validation_errors": CONFIG_STORE.public().get(
+            "runtime_validation_errors", []
+        ),
+    }
+
+
+@app.get("/api/config")
+def get_config() -> dict[str, Any]:
+    try:
+        return CONFIG_STORE.public()
+    except ConfigError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.put("/api/config")
+def update_config(payload: dict[str, Any]) -> dict[str, Any]:
+    patch = payload.get("patch") if isinstance(payload.get("patch"), dict) else payload
+    try:
+        return CONFIG_STORE.update(patch)
+    except ConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/config/stream")
+async def config_stream(request: Request):
+    async def events():
+        previous = ""
+        while not await request.is_disconnected():
+            revision = CONFIG_STORE.revision()
+            if revision != previous:
+                previous = revision
+                yield f"event: config\ndata: {json.dumps({'revision': revision})}\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/account-actions")
@@ -624,11 +690,65 @@ def get_account_actions() -> dict[str, Any]:
     return {"accounts": ACTION_RUNNER.snapshot()}
 
 
+@app.get("/api/workflows")
+def get_workflows() -> dict[str, Any]:
+    return {"jobs": WORKFLOW_RUNNER.snapshot()}
+
+
+@app.post("/api/workflows/register", status_code=202)
+def submit_registration_workflow(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        state = WORKFLOW_RUNNER.submit_registration(
+            payload.get("count", 1),
+            payload.get("concurrency"),
+        )
+    except WorkflowError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"job": state}
+
+
+@app.post("/api/workflows/keepalive", status_code=202)
+def submit_keepalive_workflow(payload: dict[str, Any]) -> dict[str, Any]:
+    requested = payload.get("emails") or []
+    if not isinstance(requested, list):
+        raise HTTPException(status_code=422, detail="emails 必须是数组")
+    if requested:
+        emails = [str(email).strip() for email in requested if str(email).strip()]
+    else:
+        emails = [
+            account["email"]
+            for account in DashboardStore().snapshot().get("accounts", [])
+            if account.get("stages", {}).get("registered", {}).get("ok")
+        ]
+    states = []
+    auth_mode = str(payload.get("auth_mode") or "password").strip().casefold()
+    for email in emails[:1000]:
+        try:
+            states.append(ACTION_RUNNER.submit(email, "keepalive", {"auth_mode": auth_mode}))
+        except DashboardActionError as exc:
+            states.append({"email": email, "status": "failed", "message": str(exc)})
+    return {"states": states, "submitted": len(states)}
+
+
 @app.post("/api/accounts/{email}/actions/{action}", status_code=202)
-def run_account_action(email: str, action: str) -> dict[str, Any]:
+def run_account_action(
+    email: str,
+    action: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     normalized_action = action.replace("-", "_").strip().casefold()
     try:
-        state = ACTION_RUNNER.submit(email, normalized_action)
+        state = ACTION_RUNNER.submit(email, normalized_action, payload or {})
+    except DashboardActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"action": state}
+
+
+@app.post("/api/accounts/{email}/actions/{action}/resume", status_code=202)
+def resume_account_action(email: str, action: str) -> dict[str, Any]:
+    normalized_action = action.replace("-", "_").strip().casefold()
+    try:
+        state = ACTION_RUNNER.resume_verification(email, normalized_action)
     except DashboardActionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return {"action": state}

@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 from dashboard_actions import (
@@ -81,6 +82,49 @@ class AccountArtifactStoreTests(unittest.TestCase):
 
 
 class DashboardActionRunnerTests(unittest.TestCase):
+    def test_checkpoint_context_keeps_flow_identity_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = root / "Results"
+            results.mkdir()
+            runner = DashboardActionRunner(root, results, max_workers=1)
+            runner._set_checkpoint_context(
+                "flow-a",
+                "worker-a",
+                SimpleNamespace(
+                    session_id="session-a",
+                    exit_ip="203.0.113.10",
+                    country_code="US",
+                ),
+                {
+                    "country_code": "US",
+                    "browser_locale": "en-US",
+                    "timezone": "America/New_York",
+                },
+            )
+            runner._append_checkpoint(
+                "user@outlook.com",
+                "private-password",
+                "keepalive_started",
+                "started",
+            )
+            runner._clear_checkpoint_context()
+            runner.shutdown()
+
+            record = json.loads(
+                (results / "account_checkpoints.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()[0]
+            )
+
+        self.assertEqual(record["flow_id"], "flow-a")
+        self.assertEqual(record["worker_id"], "worker-a")
+        self.assertEqual(record["proxy_session_id"], "session-a")
+        self.assertEqual(record["proxy_exit_ip"], "203.0.113.10")
+        self.assertEqual(record["identity_country_code"], "US")
+        self.assertEqual(record["browser_locale"], "en-US")
+        self.assertEqual(record["browser_timezone"], "America/New_York")
+
     def test_authorize_delegates_recovery_challenge_to_shared_controller_flow(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

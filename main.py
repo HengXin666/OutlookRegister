@@ -3,9 +3,12 @@ import time
 import json
 import threading
 import uuid
+from pathlib import Path
 from get_token import get_access_token
 from concurrent.futures import ThreadPoolExecutor
 from utils import random_email, generate_strong_password
+from config_store import ConfigStore, validate_config
+from identity_profiles import select_identity_profile
 from proxy_rotation import ProxyRotationError, RotatingProxyPool
 from controllers.patchright_controller import PatchrightController
 from controllers.playwright_controller import PlaywrightController
@@ -35,9 +38,26 @@ def process_single_flow(controller, proxy_pool=None):
             raise ProxyRotationError(
                 'strict_isolation=true 时必须为每个 flow 提供代理租约'
             )
+        configured_identity = getattr(controller, "identity_config", None)
+        if not isinstance(configured_identity, dict):
+            configured_identity = {
+                "country_code": getattr(controller, "country_code", ""),
+                "browser_locale": getattr(controller, "browser_locale", ""),
+                "timezone": getattr(controller, "browser_timezone", ""),
+            }
+        identity_profile = select_identity_profile(configured_identity)
+        requested_country = identity_profile["country_code"]
+
         if proxy_pool is not None:
             # 每个窗口使用同一渠道下的独立服务端会话。
-            proxy_lease = proxy_pool.acquire_proxy()
+            if requested_country:
+                try:
+                    proxy_lease = proxy_pool.acquire_proxy(requested_country)
+                except TypeError:
+                    # Keep small third-party/test pool adapters source-compatible.
+                    proxy_lease = proxy_pool.acquire_proxy()
+            else:
+                proxy_lease = proxy_pool.acquire_proxy()
             if getattr(controller, 'strict_isolation', False) and (
                 not getattr(proxy_lease, 'session_scoped', False)
                 or not str(getattr(proxy_lease, 'exit_ip', '')).strip()
@@ -57,7 +77,13 @@ def process_single_flow(controller, proxy_pool=None):
             flow_id,
             proxy_session_id=getattr(proxy_lease, 'session_id', ''),
             proxy_exit_ip=getattr(proxy_lease, 'exit_ip', ''),
+            proxy_country_code=(
+                getattr(proxy_lease, 'country_code', '') or requested_country
+            ),
             worker_id=worker_id,
+            browser_locale=identity_profile["browser_locale"],
+            browser_timezone=identity_profile["timezone"],
+            flow_country_code=requested_country,
         )
         # Establish flow-local state before creating the page so all browser
         # setup and diagnostics are associated with this flow.
@@ -68,6 +94,12 @@ def process_single_flow(controller, proxy_pool=None):
                 flow_id=flow_id,
                 proxy_session_id=getattr(proxy_lease, 'session_id', ''),
                 proxy_exit_ip=getattr(proxy_lease, 'exit_ip', ''),
+                proxy_country_code=(
+                    getattr(proxy_lease, 'country_code', '') or requested_country
+                ),
+                identity_country_code=requested_country,
+                browser_locale=identity_profile["browser_locale"],
+                browser_timezone=identity_profile["timezone"],
                 worker_id=worker_id,
             )
             traffic_started = True
@@ -171,7 +203,10 @@ def process_single_flow(controller, proxy_pool=None):
                     recovery_email=controller.get_recovery_email(),
                     client_id=controller.oauth_client_id,
                     refresh_token=refresh_token,
-                    proxy_url=getattr(controller, 'hx_email_proxy_url', ''),
+                    proxy_url=(
+                        task_proxy
+                        or getattr(controller, 'hx_email_proxy_url', '')
+                    ),
                 )
             except Exception as exc:
                 controller._write_account_checkpoint(
@@ -280,17 +315,26 @@ def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100, proxy_p
             time.sleep(0.5)
 
     print(f"\n[Result] - 共: {max_tasks}, 成功 {succeeded_tasks}, 失败 {failed_tasks}")
+    return {
+        "total": max_tasks,
+        "succeeded": succeeded_tasks,
+        "failed": failed_tasks,
+    }
 
 
 if __name__ == "__main__":
 
-    with open('config.json', 'r', encoding='utf-8') as f:
-        data = json.load(f) 
+    data = ConfigStore(Path(__file__).resolve().parent / 'config.json').read()
     os.makedirs("Results", exist_ok=True)
 
     max_tasks = data["max_tasks"]
     concurrent_flows = data["concurrent_flows"]
     strict_isolation = bool(data.get("strict_isolation", True))
+
+    validation_errors = validate_config(data, for_run=True)
+    if validation_errors:
+        print('[Config] 配置不允许启动任务: ' + '；'.join(validation_errors))
+        exit(1)
 
     proxy_pool = None
     proxy_rotation_cfg = dict(data.get("proxy_rotation") or {})

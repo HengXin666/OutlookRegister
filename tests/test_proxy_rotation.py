@@ -97,6 +97,23 @@ class ExitIpSession(FakeSession):
         return self.request("GET", url, **kwargs)
 
 
+class CountrySession(FakeSession):
+    def request(self, method, url, **kwargs):
+        if method == "PUT":
+            self.calls.append((method, url, kwargs))
+            session_id = url.split("/sessions/", 1)[1]
+            country_code = (kwargs.get("json") or {}).get("country_code", "")
+            return FakeResponse(200, {
+                "session_id": session_id,
+                "proxy_username": f"hx-session-{session_id}",
+                "proxy_password": "secret:@value",
+                "country_code": country_code,
+                "route_mode": "residential",
+                "session_index": -1,
+            })
+        return super().request(method, url, **kwargs)
+
+
 class ReleaseFailureSession(ExitIpSession):
     def request(self, method, url, **kwargs):
         if method == "DELETE":
@@ -160,6 +177,58 @@ class RotatingProxyPoolTests(unittest.TestCase):
             fake_session.calls[2][2]["json"],
             {"route_mode": "upstream"},
         )
+
+    def test_residential_post_route_keeps_the_existing_flow_session(self):
+        pool = RotatingProxyPool({
+            "base_url": "http://127.0.0.1:19090",
+            "session_scoped": True,
+            "post_registration_route": "residential",
+            "tokens": [{
+                "token": "shared-token",
+                "proxy": "http://127.0.0.1:18088",
+            }],
+        })
+        fake_session = FakeSession()
+        pool._session = fake_session
+
+        lease = pool.acquire_proxy()
+        returned = pool.switch_after_registration(lease)
+
+        self.assertIs(returned, lease)
+        self.assertEqual([call[0] for call in fake_session.calls], ["PUT"])
+
+    def test_country_code_is_sent_and_must_be_echoed_by_proxy_group(self):
+        pool = RotatingProxyPool({
+            "base_url": "http://127.0.0.1:19090",
+            "session_scoped": True,
+            "require_country_echo": True,
+            "tokens": [{
+                "token": "shared-token",
+                "proxy": "http://127.0.0.1:18088",
+            }],
+        })
+        fake_session = CountrySession()
+        pool._session = fake_session
+
+        lease = pool.acquire_proxy("US")
+
+        self.assertEqual(lease.country_code, "US")
+        self.assertEqual(fake_session.calls[0][2]["json"], {"country_code": "US"})
+
+    def test_country_specific_channel_is_not_used_for_another_requested_country(self):
+        pool = RotatingProxyPool({
+            "base_url": "http://127.0.0.1:19090",
+            "session_scoped": True,
+            "require_country_echo": True,
+            "tokens": [{
+                "token": "gb-token",
+                "proxy": "http://127.0.0.1:18088",
+                "country_code": "GB",
+            }],
+        })
+
+        with self.assertRaisesRegex(ProxyRotationError, "没有配置支持国家 US"):
+            pool.acquire_proxy("US")
 
     def test_malformed_create_response_releases_allocated_server_session(self):
         pool = RotatingProxyPool({

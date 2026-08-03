@@ -91,7 +91,7 @@ class PatchrightController(BaseBrowserController):
         browser = self.get_thread_browser()
         if not browser:
             raise RuntimeError('无法创建注册浏览器')
-        context = browser.new_context()
+        context = self.new_browser_context(browser)
         try:
             return context.new_page()
         except Exception:

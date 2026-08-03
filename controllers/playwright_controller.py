@@ -1,5 +1,7 @@
 import json
+from pathlib import Path
 from playwright.sync_api import sync_playwright
+from config_store import ConfigStore
 from .base_controller import BaseBrowserController, build_browser_proxy_settings
 
 
@@ -7,8 +9,7 @@ class PlaywrightController(BaseBrowserController):
 
     def __init__(self):
         super().__init__()
-        with open('config.json', 'r', encoding='utf-8') as f:
-            data = json.load(f)  
+        data = ConfigStore(Path(__file__).resolve().parent.parent / 'config.json').read()
         self.browser_path = data["playwright"]["browser_path"]
 
     def launch_browser(self, proxy=None, playwright=None):
@@ -40,7 +41,7 @@ class PlaywrightController(BaseBrowserController):
         browser = self.get_thread_browser()
         if not browser:
             raise RuntimeError('无法创建注册浏览器')
-        context = browser.new_context()
+        context = self.new_browser_context(browser)
         try:
             return context.new_page()
         except Exception:
