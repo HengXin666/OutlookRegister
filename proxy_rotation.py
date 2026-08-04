@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import ipaddress
 import json
 import threading
@@ -7,6 +7,16 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import uuid
 
 import requests
+
+from proxy_runtime import (
+    ADVANCED_PROTOCOLS,
+    BROWSER_PROTOCOLS,
+    DEFAULT_PROTOCOL_PREFERENCE,
+    ManagedMihomo,
+    ProxyRuntimeError,
+    parse_control_node,
+    select_endpoint,
+)
 
 
 class ProxyRotationError(Exception):
@@ -20,6 +30,8 @@ class ProxyLease:
     session_id: str = ""
     session_scoped: bool = False
     exit_ip: str = ""
+    node_index: int = 0
+    runtime: ManagedMihomo | None = field(default=None, compare=False, repr=False)
 
 
 class RotatingProxyPool:
@@ -36,6 +48,13 @@ class RotatingProxyPool:
 
     def __init__(self, config):
         self.base_url = str(config.get("base_url", "")).strip().rstrip("/")
+        self.control_url = str(config.get("control_url", "")).strip().rstrip("/")
+        self.mihomo_path = str(config.get("mihomo_path", "mihomo"))
+        self.startup_timeout = float(config.get("startup_timeout_seconds", 10))
+        self.protocol_preference = tuple(
+            str(value).lower()
+            for value in config.get("protocol_preference", DEFAULT_PROTOCOL_PREFERENCE)
+        )
         self.timeout = float(config.get("timeout_seconds", 10))
         self.max_rotate_retries = int(config.get("max_rotate_retries", 2))
         self.session_scoped = bool(config.get("session_scoped", True))
@@ -57,10 +76,40 @@ class RotatingProxyPool:
             if token and proxy:
                 self.entries.append({"token": token, "proxy": proxy})
 
-        if not self.base_url:
-            raise ProxyRotationError("proxy_rotation.base_url 不能为空")
-        if not self.entries:
-            raise ProxyRotationError("proxy_rotation.tokens 至少需要配置一个 {token, proxy} 渠道")
+        self.declared_mode = bool(self.control_url)
+        if self.declared_mode:
+            parsed_control = urlsplit(self.control_url)
+            loopback_control = parsed_control.hostname == "localhost"
+            if parsed_control.hostname and not loopback_control:
+                try:
+                    loopback_control = ipaddress.ip_address(
+                        parsed_control.hostname
+                    ).is_loopback
+                except ValueError:
+                    pass
+            if (
+                parsed_control.scheme not in ("http", "https")
+                or not parsed_control.netloc
+                or not parsed_control.path.startswith("/ctl/")
+                or parsed_control.path == "/ctl/"
+                or parsed_control.query
+                or parsed_control.fragment
+            ):
+                raise ProxyRotationError("proxy_rotation.control_url 必须是 HTTP(S) /ctl/ 地址")
+            if parsed_control.scheme != "https" and not loopback_control:
+                raise ProxyRotationError(
+                    "公网 proxy_rotation.control_url 必须使用 HTTPS"
+                )
+            if not self.protocol_preference or any(
+                value not in ADVANCED_PROTOCOLS | BROWSER_PROTOCOLS
+                for value in self.protocol_preference
+            ):
+                raise ProxyRotationError("proxy_rotation.protocol_preference 包含不支持的协议")
+        else:
+            if not self.base_url:
+                raise ProxyRotationError("proxy_rotation.base_url 不能为空")
+            if not self.entries:
+                raise ProxyRotationError("proxy_rotation.tokens 至少需要配置一个 {token, proxy} 渠道")
         if self.post_registration_route not in ("direct", "upstream"):
             raise ProxyRotationError(
                 "proxy_rotation.post_registration_route 只支持 direct 或 upstream"
@@ -73,6 +122,11 @@ class RotatingProxyPool:
         self._request_lock = threading.Lock()
         self._active_exit_ips: dict[str, tuple[str, str]] = {}
         self._next_index = 0
+        self._declared_nodes = []
+        self._available_nodes = []
+
+        if self.declared_mode:
+            self._load_declared_nodes()
 
         if self.enforce_unique_exit_ip and not self.check_proxy:
             raise ProxyRotationError(
@@ -87,6 +141,10 @@ class RotatingProxyPool:
     def enforce_unique_exit_ip(self):
         return bool(getattr(self, "_enforce_unique_exit_ip", False))
 
+    @property
+    def capacity(self):
+        return len(self._declared_nodes) if self.declared_mode else len(self.entries)
+
     def acquire_proxy(self):
         """
         为本次注册流程获取独立代理租约。
@@ -97,6 +155,8 @@ class RotatingProxyPool:
         # Serialize allocation and verification so two concurrent workers cannot
         # both reserve the same observed exit IP between the check and insert.
         with self._allocation_lock:
+            if self.declared_mode:
+                return self._acquire_declared_proxy()
             with self._lock:
                 start_index = self._next_index % len(self.entries)
                 self._next_index += 1
@@ -174,6 +234,20 @@ class RotatingProxyPool:
     def _switch_route(self, lease, route_mode, verify_exit_ip=True):
         if not lease or not lease.session_scoped:
             return lease
+        if lease.node_index:
+            response = self._request_control(
+                "POST",
+                f"nodes/{lease.node_index}/route",
+                json={"route_mode": route_mode},
+            )
+            if response.status_code != 200:
+                raise ProxyRotationError(
+                    f"声明节点切换 {route_mode} 失败: HTTP {response.status_code}: {response.text[:200]}"
+                )
+            payload = self._json(response, f"声明节点切换 {route_mode}")
+            if payload.get("route_mode") != route_mode:
+                raise ProxyRotationError(f"声明节点切换 {route_mode} 响应状态不一致")
+            return lease
         response = self._request(
             "POST",
             f"/rot/{lease.token}/sessions/{lease.session_id}/route",
@@ -201,6 +275,21 @@ class RotatingProxyPool:
     def release(self, lease):
         """Release server-side credentials after the browser has closed."""
         if not lease:
+            return
+        if lease.node_index:
+            if lease.runtime is not None:
+                lease.runtime.close()
+            self._release_exit_ip(lease)
+            with self._lock:
+                node = next(
+                    (item for item in self._declared_nodes if item.index == lease.node_index),
+                    None,
+                )
+                if node is not None and all(
+                    item.index != node.index for item in self._available_nodes
+                ):
+                    self._available_nodes.append(node)
+                    self._available_nodes.sort(key=lambda item: item.index)
             return
         if not lease.session_scoped:
             self._release_exit_ip(lease)
@@ -309,6 +398,84 @@ class RotatingProxyPool:
             session_id=session_id,
             session_scoped=True,
         )
+
+    def _load_declared_nodes(self):
+        response = self._request_control("GET", "nodes")
+        if response.status_code != 200:
+            raise ProxyRotationError(
+                f"读取 HX 声明节点失败: HTTP {response.status_code}: {response.text[:200]}"
+            )
+        payload = self._json(response, "读取 HX 声明节点")
+        try:
+            nodes = [parse_control_node(item) for item in payload.get("nodes", [])]
+        except ProxyRuntimeError as exc:
+            raise ProxyRotationError(str(exc)) from exc
+        nodes.sort(key=lambda item: item.index)
+        if len(nodes) < self.required_pool_size:
+            raise ProxyRotationError(
+                f"HX 声明节点不足: nodes={len(nodes)}, required={self.required_pool_size}"
+            )
+        self._declared_nodes = nodes
+        self._available_nodes = list(nodes)
+
+    def _acquire_declared_proxy(self):
+        with self._lock:
+            if not self._available_nodes:
+                raise ProxyRotationError("HX 声明节点池已无可用租约")
+            reserved = self._available_nodes.pop(0)
+        runtime = None
+        lease = None
+        try:
+            response = self._request_control("POST", f"nodes/{reserved.index}/next")
+            if response.status_code != 200:
+                raise ProxyRotationError(
+                    f"HX 声明节点换 IP 失败: HTTP {response.status_code}: {response.text[:200]}"
+                )
+            node = parse_control_node(self._json(response, "HX 声明节点换 IP"))
+            endpoint = select_endpoint(node, self.protocol_preference)
+            if endpoint.browser_compatible:
+                proxy = urlsplit(endpoint.uri)._replace(fragment="").geturl()
+            else:
+                runtime = ManagedMihomo(
+                    self.mihomo_path,
+                    endpoint.uri,
+                    self.startup_timeout,
+                )
+                runtime.start()
+                proxy = runtime.proxy_url
+            lease = ProxyLease(
+                proxy=proxy,
+                token="",
+                session_id=f"node-{node.index}",
+                session_scoped=True,
+                node_index=node.index,
+                runtime=runtime,
+            )
+            if self.check_proxy:
+                lease = replace(lease, exit_ip=self._verify(lease.proxy))
+                self._reserve_exit_ip(lease)
+            return lease
+        except (ProxyRotationError, ProxyRuntimeError) as exc:
+            if runtime is not None:
+                runtime.close()
+            with self._lock:
+                self._available_nodes.append(reserved)
+                self._available_nodes.sort(key=lambda item: item.index)
+            if isinstance(exc, ProxyRotationError):
+                raise
+            raise ProxyRotationError(str(exc)) from exc
+
+    def _request_control(self, method, relative_path, **kwargs):
+        try:
+            with self._request_lock:
+                return self._session.request(
+                    method,
+                    f"{self.control_url}/{relative_path}",
+                    timeout=self.timeout,
+                    **kwargs,
+                )
+        except requests.RequestException as exc:
+            raise ProxyRotationError("HX 声明节点控制请求失败") from exc
 
     def _request(self, method, path, **kwargs):
         try:

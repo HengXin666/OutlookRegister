@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from urllib.parse import unquote, urlsplit
 
 from proxy_rotation import ProxyRotationError, RotatingProxyPool
@@ -105,7 +106,109 @@ class ReleaseFailureSession(ExitIpSession):
         return super().request(method, url, **kwargs)
 
 
+class DeclaredNodeSession(FakeSession):
+    node = {
+        "index": 1,
+        "node_name": "residential-01",
+        "proxy_url": None,
+        "route_mode": "residential",
+        "endpoints": [{
+            "protocol": "vless",
+            "transport": "ws",
+            "uri": (
+                "vless://00000000-0000-4000-8000-000000000001@proxy.example.com:443"
+                "?security=tls&type=ws&host=proxy.example.com&path=%2Fws&sni=proxy.example.com"
+            ),
+            "browser_compatible": False,
+        }],
+    }
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        if method == "GET" and url.endswith("/nodes"):
+            return FakeResponse(200, {"nodes": [self.node]})
+        if method == "POST" and url.endswith("/nodes/1/next"):
+            return FakeResponse(200, self.node)
+        if method == "POST" and url.endswith("/nodes/1/route"):
+            return FakeResponse(200, {"route_mode": kwargs["json"]["route_mode"]})
+        raise AssertionError(f"unexpected request {method} {url}")
+
+
+class FakeMihomoRuntime:
+    instances = []
+
+    def __init__(self, binary, uri, startup_timeout):
+        self.binary = binary
+        self.uri = uri
+        self.startup_timeout = startup_timeout
+        self.proxy_url = "http://127.0.0.1:32123"
+        self.started = False
+        self.closed = False
+        self.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def close(self):
+        self.closed = True
+
+
 class RotatingProxyPoolTests(unittest.TestCase):
+    def test_declared_vless_node_uses_local_mihomo_and_returns_to_pool(self):
+        session = DeclaredNodeSession()
+        FakeMihomoRuntime.instances.clear()
+        config = {
+            "control_url": "https://proxy.example.com/ctl/control-token",
+            "protocol_preference": ["vless"],
+            "required_pool_size": 1,
+            "session_scoped": True,
+            "check_proxy": False,
+            "enforce_unique_exit_ip": False,
+            "post_registration_route": "direct",
+        }
+        with patch("proxy_rotation.requests.Session", return_value=session), patch(
+            "proxy_rotation.ManagedMihomo", FakeMihomoRuntime
+        ):
+            pool = RotatingProxyPool(config)
+            lease = pool.acquire_proxy()
+            self.assertEqual(pool.capacity, 1)
+            self.assertEqual(lease.proxy, "http://127.0.0.1:32123")
+            self.assertEqual(lease.node_index, 1)
+            self.assertEqual(lease.session_id, "node-1")
+            self.assertTrue(FakeMihomoRuntime.instances[0].started)
+
+            pool.switch_after_registration(lease)
+            pool.release(lease)
+
+        self.assertTrue(FakeMihomoRuntime.instances[0].closed)
+        self.assertEqual(len(pool._available_nodes), 1)
+        self.assertEqual(
+            [(method, url.rsplit("/", 1)[-1]) for method, url, _ in session.calls],
+            [("GET", "nodes"), ("POST", "next"), ("POST", "route")],
+        )
+
+    def test_declared_mode_rejects_insufficient_nodes(self):
+        session = DeclaredNodeSession()
+        with patch("proxy_rotation.requests.Session", return_value=session):
+            with self.assertRaisesRegex(ProxyRotationError, "required=2"):
+                RotatingProxyPool({
+                    "control_url": "https://proxy.example.com/ctl/control-token",
+                    "required_pool_size": 2,
+                    "session_scoped": True,
+                    "check_proxy": False,
+                    "enforce_unique_exit_ip": False,
+                })
+
+    def test_declared_mode_rejects_public_plaintext_control_url(self):
+        with self.assertRaisesRegex(ProxyRotationError, "必须使用 HTTPS"):
+            RotatingProxyPool({
+                "control_url": "http://proxy.example.com/ctl/control-token",
+                "required_pool_size": 1,
+                "session_scoped": True,
+                "check_proxy": False,
+                "enforce_unique_exit_ip": False,
+            })
+
     def test_unique_exit_ip_requires_session_scoped_leases(self):
         with self.assertRaisesRegex(ProxyRotationError, "session_scoped"):
             RotatingProxyPool({

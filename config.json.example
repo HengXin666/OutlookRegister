@@ -45,7 +45,12 @@
     },
     "proxy_rotation": {
         "enabled": true,
-        "base_url": "http://127.0.0.1:64756",
+        "control_url": "https://proxy.example.com/ctl/<control-token>",
+        "mihomo_path": "mihomo",
+        "protocol_preference": [
+            "vless"
+        ],
+        "startup_timeout_seconds": 10,
         "timeout_seconds": 10,
         "max_rotate_retries": 6,
         "session_scoped": true,
@@ -53,13 +58,7 @@
         "check_proxy": true,
         "enforce_unique_exit_ip": true,
         "verify_browser_exit_ip": true,
-        "exit_ip_endpoint": "https://api.ipify.org?format=json",
-        "tokens": [
-            {
-                "token": "",
-                "proxy": ""
-            }
-        ]
+        "exit_ip_endpoint": "https://api.ipify.org?format=json"
     },
     "info": "外层参数必须填写,内部参数可选.email_suffix参数只能是@outlook.com或者@hotmail.com.playwright可用性较差.并且使用playwright指纹浏览器要能过https://www.browserscan.net,否则请使用patchright.请本地搭建代理池."
 }

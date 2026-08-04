@@ -24,19 +24,19 @@ Outlook 注册机
 6.视运行脚本填写或留空`browser_path`。  
 7.`python main.py`。  
 
-HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
+HX-ProxyGroup 住宅代理对接（托管 VLESS WebSocket）：
 1. 启动 HX-ProxyGroup（`./run.sh`，默认控制面 `http://127.0.0.1:19090`），登录后左侧边栏进入「住宅代理」。
 2. 「供应商」页：先创建住宅代理供应商——BestProxy 预设已内置官方语法，或选择「API 提取」模式直接填 BestProxy 提取链接（`https://bestproxy.com/api/v2/<提取ID>?app_key=...`，无需账号密码）。保存后用「测试连接」确认能取到出口 IP。
-3. 「渠道」页：为该供应商创建渠道。要支持「每个会话固定 IP、换会话才换 IP」请选 **sticky** 模式；选 passthrough 则透传给上游自行轮换。渠道会生成 listener 入口地址（HTTP/SOCKS5，可带账密）与公共轮换地址 `POST /rot/<token>/next`，页面可一键复制。
-4. 在`config.json`的`proxy_rotation`中填写`base_url`（控制面地址）与`tokens`，每个渠道一组`{"token": "...", "proxy": "http://用户:密码@主机:端口"}`，token 与入口地址从渠道详情复制。
-5. 将`"enabled"`和`"session_scoped"`设为`true`，同时保留`"check_proxy": true`、`"enforce_unique_exit_ip": true`和`"verify_browser_exit_ip": true`。每个窗口会调用`PUT /rot/<token>/sessions/<session_id>`申请独立住宅出口；旧模式`session_scoped=false`才会调用全局`POST /rot/<token>/next`。
-6. 一个渠道 token 和一个 Listener 端口即可承载多个并行窗口。客户端会为每个窗口创建独立`session_id`和代理账号，不需要按`concurrent_flows`重复创建渠道。
+3. 「渠道」页：创建 **sticky** 渠道并设置不小于 `concurrent_flows` 的节点数量。渠道固定发布 VLESS over WebSocket，不开放公网 HTTP/SOCKS 端口。
+4. 在`config.json`的`proxy_rotation.control_url`填写渠道的 `https://.../ctl/<control-token>` 地址，并设置 `mihomo_path`；无需填写内部端口、WS Path、UUID 或 HTTP/SOCKS 代理地址。
+5. 将`"enabled"`和`"session_scoped"`设为`true`，同时保留`"check_proxy": true`、`"enforce_unique_exit_ip": true`和`"verify_browser_exit_ip": true`。程序从 `/ctl/` 租用声明节点，并为每个活动 flow 启动一个只监听环回地址的本机 Mihomo。
+6. 浏览器、密保和 OAuth token 交换始终复用同一声明节点；flow 结束后关闭本机 Mihomo 并归还本地租约，不删除服务端节点。
 7. 关闭`proxy_rotation`（`"enabled": false`）时仍使用`config.json`中的静态`proxy`。
 8. `check_proxy`会通过代理请求`exit_ip_endpoint`确认出口；启用`enforce_unique_exit_ip`后，活动窗口检测到相同出口 IP 会直接拒绝，不会让两个任务并行使用同一出口。
 
 顶层`proxy`仅在未启用代理池时作为静态回退；启用代理池后，注册、OAuth 浏览器和 token 交换都会使用当前 flow 的代理租约。HX-Email 的控制 API 仍访问本地配置的服务地址，导入账号时会为每个 flow 使用独立分组；分组使用的是 `recovery_email.hx_email.proxy_url` 持久代理，不会写入流程结束即释放的临时 session。
 
-并行会话与切流说明：每个注册线程调用`PUT /rot/<token>/sessions/<session_id>`取得独立代理账号，在同一个端口上通过`IN-USER`路由到不同住宅 IP。注册、密保和 OAuth 会贯穿使用同一个 flow 代理；只有浏览器流程全部结束后才会执行`post_registration_route`切换。默认使用`direct`，避免在 Microsoft 流程中途从住宅线路切到公共 upstream。`direct`表示 HX-ProxyGroup 服务器物理出口，`upstream`表示住宅供应商配置的普通上游代理组。当前 sticky API 按需分配住宅节点，不预建`pool_size`；请将供应商的`max_concurrent_sessions`设置为不小于住宅并发数，容量耗尽时服务端会返回冲突错误。
+并行会话与切流说明：每个注册 flow 独占 `/ctl/` 返回的声明节点，并由本机 Mihomo 将 VLESS WS 落地为环回 HTTP 代理。注册、密保和 OAuth 会贯穿使用同一个 flow 代理；只有浏览器流程全部结束后才会执行`post_registration_route`切换。默认使用`direct`，避免在 Microsoft 流程中途切换出口。`direct`表示 HX-ProxyGroup 服务器物理出口，`upstream`表示住宅供应商配置的普通上游代理组。请将渠道节点数量和供应商`max_concurrent_sessions`都设置为不小于住宅并发数。
 
 备用邮箱与 OAuth2：
 1. 在 `recovery_email.hx_email` 中配置 HX-Email 地址及认证信息。推荐同时配置 `api_key`、`username`、`password`；也可通过 `HX_EMAIL_API_KEY`、`HX_EMAIL_USERNAME`、`HX_EMAIL_PASSWORD` 环境变量提供，避免把凭据写入文件。`proxy_url` 仅填写 HX-Email 服务长期可访问的持久代理，不要填写注册 flow 的临时 session 代理。

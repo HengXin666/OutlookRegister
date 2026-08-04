@@ -315,7 +315,7 @@ if __name__ == "__main__":
     if proxy_rotation_cfg.get("enabled"):
         try:
             proxy_pool = RotatingProxyPool(proxy_rotation_cfg)
-            print(f"[ProxyRotate] 已启用 HX-ProxyGroup 住宅代理轮换, 共 {len(proxy_pool.entries)} 个渠道 token")
+            print(f"[ProxyRotate] 已启用 HX-ProxyGroup 住宅代理轮换, 容量 {proxy_pool.capacity}")
         except ProxyRotationError as e:
             print(f"[ProxyRotate] 配置错误: {e}")
             exit(1)
