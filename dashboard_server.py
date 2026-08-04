@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from dashboard_actions import DashboardActionError, DashboardActionRunner
 from config_store import ConfigError, ConfigStore
+from proxy_rotation import ProxyRotationError, RotatingProxyPool
 from workflow_runner import WorkflowError, WorkflowRunner
 
 
@@ -146,6 +147,22 @@ def _human_bytes(value: int) -> str:
 
 def _traffic_stage_label(stage: str) -> str:
     return TRAFFIC_STAGE_LABELS.get(stage, stage.replace("_", " ").title())
+
+
+def _automatic_proxy_config(
+    control_url: str,
+    current_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the internal proxy config from the one user-facing URL."""
+    current_rotation = current_config.get("proxy_rotation") or {}
+    if not isinstance(current_rotation, dict):
+        current_rotation = {}
+    return {
+        "control_url": control_url,
+        "timeout_seconds": current_rotation.get("timeout_seconds", 10),
+        "max_rotate_retries": current_rotation.get("max_rotate_retries", 2),
+        "required_pool_size": 0,
+    }
 
 
 _SENSITIVE_DETAIL_PATTERN = re.compile(
@@ -665,6 +682,63 @@ def update_config(payload: dict[str, Any]) -> dict[str, Any]:
         return CONFIG_STORE.update(patch)
     except ConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/proxy-rotation/check")
+def check_proxy_rotation(payload: dict[str, Any]) -> dict[str, Any]:
+    """Verify one pasted HX URL, then persist the safe automatic-mode defaults."""
+    control_url = str(
+        payload.get("control_url") or payload.get("url") or ""
+    ).strip()
+    if not control_url:
+        raise HTTPException(status_code=422, detail="HX-ProxyGroup 住宅控制 URL 不能为空")
+
+    try:
+        current_config = CONFIG_STORE.read()
+        proxy_config = _automatic_proxy_config(control_url, current_config)
+        pool = RotatingProxyPool(proxy_config)
+        verification = pool.check_connection()
+        updated = CONFIG_STORE.update({
+            "proxy": "",
+            "strict_isolation": True,
+            "isolate_hx_email_group": True,
+            "prevent_direct_network_leaks": True,
+            "identity": {
+                "country_selection": "proxy",
+                "country_code": "",
+                "browser_locale": "",
+                "timezone": "",
+                "require_dynamic_residential_ip": True,
+            },
+            "proxy_rotation": {
+                "enabled": True,
+                "control_url": control_url,
+                "rotation_url": "",
+                "base_url": "",
+                "listener": "",
+                "timeout_seconds": proxy_config["timeout_seconds"],
+                "max_rotate_retries": proxy_config["max_rotate_retries"],
+                "session_scoped": True,
+                "post_registration_route": "residential",
+                "check_proxy": True,
+                "enforce_unique_exit_ip": True,
+                "verify_browser_exit_ip": True,
+                "require_country_echo": True,
+                "exit_ip_endpoint": "https://api.ipify.org?format=json",
+                "tokens": [],
+            },
+        })
+    except (ConfigError, ProxyRotationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return {
+        "ok": True,
+        "exit_ip": verification["exit_ip"],
+        "country_code": verification["country_code"],
+        "browser_locale": verification["browser_locale"],
+        "timezone": verification["timezone"],
+        "config": updated,
+    }
 
 
 @app.get("/api/config/stream")

@@ -316,8 +316,11 @@ class DashboardActionRunner:
         if proxy_pool is not None:
             proxy_lease = self._acquire_proxy(
                 proxy_pool,
-                identity_profile["country_code"],
+                "" if getattr(proxy_pool, "auto_identity", False)
+                else identity_profile["country_code"],
             )
+            if getattr(proxy_pool, "auto_identity", False):
+                identity_profile = proxy_pool.identity_profile_for_lease(proxy_lease)
             controller.set_proxy(proxy_lease.proxy)
         controller.results_dir = str(self.results_dir)
         controller.traffic = TrafficRecorder(self.results_dir)
@@ -746,8 +749,11 @@ class DashboardActionRunner:
         if proxy_pool is not None:
             proxy_lease = self._acquire_proxy(
                 proxy_pool,
-                identity_profile["country_code"],
+                "" if getattr(proxy_pool, "auto_identity", False)
+                else identity_profile["country_code"],
             )
+            if getattr(proxy_pool, "auto_identity", False):
+                identity_profile = proxy_pool.identity_profile_for_lease(proxy_lease)
             controller.set_proxy(proxy_lease.proxy)
         controller.results_dir = str(self.results_dir)
         controller.traffic = TrafficRecorder(self.results_dir)

@@ -18,22 +18,42 @@ class IdentityProfile:
 
 
 _COUNTRY_DEFAULTS: dict[str, IdentityProfile] = {
+    "AT": IdentityProfile("AT", "de-AT", "Europe/Vienna"),
     "AU": IdentityProfile("AU", "en-AU", "Australia/Sydney"),
+    "BE": IdentityProfile("BE", "nl-BE", "Europe/Brussels"),
     "BR": IdentityProfile("BR", "pt-BR", "America/Sao_Paulo"),
     "CA": IdentityProfile("CA", "en-CA", "America/Toronto"),
     "CH": IdentityProfile("CH", "de-CH", "Europe/Zurich"),
+    "CN": IdentityProfile("CN", "zh-CN", "Asia/Shanghai"),
+    "DK": IdentityProfile("DK", "da-DK", "Europe/Copenhagen"),
     "DE": IdentityProfile("DE", "de-DE", "Europe/Berlin"),
     "ES": IdentityProfile("ES", "es-ES", "Europe/Madrid"),
+    "FI": IdentityProfile("FI", "fi-FI", "Europe/Helsinki"),
     "FR": IdentityProfile("FR", "fr-FR", "Europe/Paris"),
     "GB": IdentityProfile("GB", "en-GB", "Europe/London"),
+    "HK": IdentityProfile("HK", "zh-HK", "Asia/Hong_Kong"),
     "IE": IdentityProfile("IE", "en-IE", "Europe/Dublin"),
+    "ID": IdentityProfile("ID", "id-ID", "Asia/Jakarta"),
     "IN": IdentityProfile("IN", "en-IN", "Asia/Kolkata"),
+    "IL": IdentityProfile("IL", "he-IL", "Asia/Jerusalem"),
     "IT": IdentityProfile("IT", "it-IT", "Europe/Rome"),
     "JP": IdentityProfile("JP", "ja-JP", "Asia/Tokyo"),
+    "KR": IdentityProfile("KR", "ko-KR", "Asia/Seoul"),
+    "MX": IdentityProfile("MX", "es-MX", "America/Mexico_City"),
     "NL": IdentityProfile("NL", "nl-NL", "Europe/Amsterdam"),
+    "NO": IdentityProfile("NO", "nb-NO", "Europe/Oslo"),
+    "NZ": IdentityProfile("NZ", "en-NZ", "Pacific/Auckland"),
+    "PL": IdentityProfile("PL", "pl-PL", "Europe/Warsaw"),
+    "PT": IdentityProfile("PT", "pt-PT", "Europe/Lisbon"),
+    "RU": IdentityProfile("RU", "ru-RU", "Europe/Moscow"),
     "SE": IdentityProfile("SE", "sv-SE", "Europe/Stockholm"),
     "SG": IdentityProfile("SG", "en-SG", "Asia/Singapore"),
+    "TH": IdentityProfile("TH", "th-TH", "Asia/Bangkok"),
+    "TR": IdentityProfile("TR", "tr-TR", "Europe/Istanbul"),
+    "TW": IdentityProfile("TW", "zh-TW", "Asia/Taipei"),
+    "UA": IdentityProfile("UA", "uk-UA", "Europe/Kyiv"),
     "US": IdentityProfile("US", "en-US", "America/New_York"),
+    "ZA": IdentityProfile("ZA", "en-ZA", "Africa/Johannesburg"),
 }
 
 _COUNTRY_CODE_RE = re.compile(r"^[A-Za-z0-9]{2,16}(?:-[A-Za-z0-9]{1,16})?$")
@@ -117,4 +137,3 @@ def select_identity_profile(identity: Mapping[str, Any] | None) -> dict[str, str
     profiles = identity_profiles(identity)
     selected = secrets.choice(profiles) if profiles else IdentityProfile()
     return {key: str(item) for key, item in asdict(selected).items()}
-

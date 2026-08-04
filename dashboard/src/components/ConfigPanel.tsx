@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertCircle, Check, LoaderCircle, Plus, RefreshCw, Save, Settings2, Trash2 } from "lucide-react"
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  Globe2,
+  KeyRound,
+  LoaderCircle,
+  RefreshCw,
+  Save,
+  Settings2,
+} from "lucide-react"
 import { Badge, Button, Card } from "./ui"
 
 type ConfigValue = string | number | boolean | null | ConfigValue[] | { [key: string]: ConfigValue }
@@ -8,6 +18,14 @@ type ConfigResponse = {
   config: Record<string, ConfigValue>
   validation_errors: string[]
   runtime_validation_errors: string[]
+}
+type ProxyCheckResponse = ConfigResponse & {
+  ok?: boolean
+  exit_ip?: string
+  country_code?: string
+  browser_locale?: string
+  timezone?: string
+  detail?: string
 }
 
 const CONFIGURED_VALUE = "__configured__"
@@ -33,25 +51,12 @@ function setPath(source: Record<string, ConfigValue>, path: string[], value: Con
   return result
 }
 
+function isConfigured(value: ConfigValue) {
+  return typeof value === "string" && value === CONFIGURED_VALUE
+}
+
 function inputValue(value: ConfigValue) {
-  return typeof value === "string" && value === CONFIGURED_VALUE ? "已配置（留空保持）" : String(value ?? "")
-}
-
-function objectValue(value: ConfigValue): Record<string, ConfigValue> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, ConfigValue>
-    : {}
-}
-
-function configuredCountryPool(draft: Record<string, ConfigValue>) {
-  const configured = getPath(draft, ["identity", "country_pool"], null)
-  if (Array.isArray(configured)) return configured
-  const identity = objectValue(getPath(draft, ["identity"], {}))
-  return [{
-    country_code: identity.country_code || "",
-    browser_locale: identity.browser_locale || identity.locale || "",
-    timezone: identity.timezone || "",
-  }]
+  return isConfigured(value) ? "已配置（输入新 URL 替换）" : String(value ?? "")
 }
 
 export function ConfigPanel() {
@@ -59,21 +64,25 @@ export function ConfigPanel() {
   const [draft, setDraft] = useState<Record<string, ConfigValue> | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [checking, setChecking] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const load = useCallback(async (preserveDraft = false) => {
+  const load = useCallback(async () => {
     const response = await fetch("/api/config", { cache: "no-store" })
-    const next = (await response.json()) as ConfigResponse
-    if (!response.ok) throw new Error((next as unknown as { detail?: string }).detail || `HTTP ${response.status}`)
+    const next = (await response.json()) as ConfigResponse & { detail?: string }
+    if (!response.ok) throw new Error(next.detail || `HTTP ${response.status}`)
     setPayload(next)
-    if (!preserveDraft) setDraft(next.config)
+    setDraft(next.config)
     setLoading(false)
   }, [])
 
   useEffect(() => {
-    void load().catch((reason) => { setError(reason instanceof Error ? reason.message : "无法读取配置"); setLoading(false) })
+    void load().catch((reason) => {
+      setError(reason instanceof Error ? reason.message : "无法读取配置")
+      setLoading(false)
+    })
     const source = new EventSource("/api/config/stream")
     source.addEventListener("config", () => {
       if (!dirty) void load().catch(() => undefined)
@@ -86,6 +95,7 @@ export function ConfigPanel() {
     setDraft((current) => current ? setPath(current, path, value) : current)
     setDirty(true)
     setNotice(null)
+    setError(null)
   }
 
   const save = async () => {
@@ -111,69 +121,79 @@ export function ConfigPanel() {
     }
   }
 
-  const errors = useMemo(() => payload?.runtime_validation_errors || [], [payload])
+  const checkAndEnable = async () => {
+    if (!draft) return
+    const value = getPath(draft, ["proxy_rotation", "control_url"])
+    const controlUrl = String(value || "").trim()
+    if (!controlUrl || isConfigured(value)) {
+      setError("请粘贴完整的 HX-ProxyGroup 住宅控制 URL")
+      return
+    }
+    setChecking(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const response = await fetch("/api/proxy-rotation/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ control_url: controlUrl }),
+      })
+      const result = (await response.json()) as ProxyCheckResponse
+      if (!response.ok || !result.config) {
+        throw new Error(result.detail || `住宅代理校验失败（HTTP ${response.status}）`)
+      }
+      setPayload(result)
+      setDraft(result.config)
+      setDirty(false)
+      setNotice(
+        `校验通过：${result.country_code || "未知国家"} · ${result.browser_locale || "en-US"} · ${result.timezone || "UTC"} · 出口 ${result.exit_ip || "已确认"}`,
+      )
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "住宅代理校验失败")
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const errors = useMemo(() => {
+    const currentUrl = draft
+      ? String(getPath(draft, ["proxy_rotation", "control_url"]) || "").trim()
+      : ""
+    const configuredErrors = payload?.runtime_validation_errors || []
+    if (currentUrl && currentUrl !== CONFIGURED_VALUE) {
+      return configuredErrors.filter((item) => !item.includes("identity.country_code") && !item.includes("identity.country_pool") && !item.includes("identity.country_codes"))
+    }
+    return configuredErrors
+  }, [draft, payload])
+
   if (loading && !draft) return <div className="flex items-center gap-2 text-sm text-slate-500"><LoaderCircle className="h-4 w-4 animate-spin" />正在读取配置</div>
   if (!draft) return <Card className="p-6"><div className="flex items-center gap-2 text-red-700"><AlertCircle className="h-5 w-5" />{error || "配置不可用"}</div></Card>
-
-  const proxyRotation = (getPath(draft, ["proxy_rotation"], {}) as Record<string, ConfigValue>) || {}
-  const tokens = Array.isArray(proxyRotation.tokens) ? proxyRotation.tokens : []
-  const countryPool = configuredCountryPool(draft)
-
-  const updateCountryProfile = (index: number, key: string, value: ConfigValue) => {
-    const next = countryPool.map((entry) => ({ ...objectValue(entry) }))
-    next[index] = { ...next[index], [key]: value }
-    update(["identity", "country_pool"], next)
-  }
-
-  const addCountryProfile = () => {
-    update(["identity", "country_pool"], [
-      ...countryPool,
-      { country_code: "", browser_locale: "", timezone: "" },
-    ])
-  }
-
-  const removeCountryProfile = (index: number) => {
-    if (countryPool.length <= 1) return
-    update(
-      ["identity", "country_pool"],
-      countryPool.filter((_entry, entryIndex) => entryIndex !== index),
-    )
-  }
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 border-b border-slate-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div><p className="text-xs font-semibold uppercase tracking-[0.1em] text-teal-700">Runtime configuration</p><h1 className="mt-1 text-xl font-semibold text-slate-950">运行配置</h1><p className="mt-1 text-sm text-slate-500">版本 {payload?.revision || "未记录"} · 保存后对新任务热加载</p></div>
-        <div className="flex items-center gap-2"><Badge tone={dirty ? "warning" : "success"}>{dirty ? "有未保存修改" : "已同步"}</Badge><Button variant="ghost" onClick={() => void load()} title="重新读取配置" aria-label="重新读取配置"><RefreshCw className="h-4 w-4" /></Button><Button variant="primary" onClick={() => void save()} disabled={saving || !dirty} title="保存配置"><Save className="h-4 w-4" />保存</Button></div>
+        <div className="flex items-center gap-2"><Badge tone={dirty ? "warning" : "success"}>{dirty ? "有未保存修改" : "已同步"}</Badge><Button variant="ghost" onClick={() => void load()} title="重新读取配置" aria-label="重新读取配置"><RefreshCw className="h-4 w-4" /></Button><Button variant="primary" onClick={() => void save()} disabled={saving || checking || !dirty} title="保存配置"><Save className="h-4 w-4" />保存</Button></div>
       </div>
 
-      {error && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</div>}
+      {error && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert"><AlertCircle className="mr-2 inline h-4 w-4" />{error}</div>}
       {notice && <div className="rounded-md border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-800" role="status"><Check className="mr-2 inline h-4 w-4" />{notice}</div>}
       {errors.length > 0 && <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"><div className="flex items-center gap-2 font-medium"><AlertCircle className="h-4 w-4" />当前配置不能启动动态住宅 IP 任务</div><ul className="mt-2 space-y-1 pl-5 text-xs">{errors.map((item) => <li key={item} className="list-disc">{item}</li>)}</ul></div>}
 
       <section className="grid gap-6 xl:grid-cols-2">
         <Card className="p-5">
-          <div className="flex items-center gap-2 text-slate-900"><Settings2 className="h-4 w-4 text-teal-700" /><h2 className="font-semibold">国家与浏览器</h2></div>
-          <label className="mt-5 block text-xs font-medium text-slate-500">国家选择<select value={String(getPath(draft, ["identity", "country_selection"], "random"))} onChange={(event) => update(["identity", "country_selection"], event.target.value)} className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-teal-500"><option value="random">每个 flow 随机选择</option></select></label>
-          <div className="mt-5 space-y-3">
-            {countryPool.map((entry, index) => {
-              const profile = objectValue(entry)
-              return <div key={index} className="border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
-                <div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold text-slate-600">国家 {index + 1}</span><Button variant="ghost" className="h-7 w-7 px-0 text-slate-500 hover:text-red-700" onClick={() => removeCountryProfile(index)} disabled={countryPool.length <= 1} title="删除国家" aria-label={`删除国家 ${index + 1}`}><Trash2 className="h-3.5 w-3.5" /></Button></div>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <label className="text-xs font-medium text-slate-500">国家代码<input value={String(profile.country_code || "")} onChange={(event) => updateCountryProfile(index, "country_code", event.target.value.toUpperCase())} placeholder="US" className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
-                  <label className="text-xs font-medium text-slate-500">浏览器语言<input value={String(profile.browser_locale || profile.locale || "")} onChange={(event) => updateCountryProfile(index, "browser_locale", event.target.value)} placeholder="en-US" className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
-                  <label className="text-xs font-medium text-slate-500">时区<input value={String(profile.timezone || "")} onChange={(event) => updateCountryProfile(index, "timezone", event.target.value)} placeholder="America/New_York" className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
-                </div>
-              </div>
-            })}
+          <div className="flex items-center gap-2 text-slate-900"><Globe2 className="h-4 w-4 text-teal-700" /><h2 className="font-semibold">HX-ProxyGroup 住宅身份</h2></div>
+          <label className="mt-5 block text-xs font-medium text-slate-500">住宅控制 URL<input type="url" autoComplete="off" spellCheck={false} value={inputValue(getPath(draft, ["proxy_rotation", "control_url"]))} onChange={(event) => update(["proxy_rotation", "control_url"], event.target.value)} placeholder="https://主机/ctl/访问令牌" className="mt-1 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
+          <Button variant="primary" className="mt-4 w-full sm:w-auto" onClick={() => void checkAndEnable()} disabled={checking || saving} title="校验住宅代理并启用"><KeyRound className="h-4 w-4" />{checking ? <><LoaderCircle className="h-4 w-4 animate-spin" />正在校验</> : "校验并启用"}</Button>
+          <div className="mt-5 grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-3">
+            <div><p className="text-xs text-slate-500">国家</p><p className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-slate-800"><CheckCircle2 className="h-4 w-4 text-emerald-600" />自动确认</p></div>
+            <div><p className="text-xs text-slate-500">浏览器语言</p><p className="mt-1 text-sm font-semibold text-slate-800">自动匹配</p></div>
+            <div><p className="text-xs text-slate-500">时区</p><p className="mt-1 text-sm font-semibold text-slate-800">自动匹配</p></div>
           </div>
-          <Button variant="secondary" className="mt-4" onClick={addCountryProfile} title="添加国家"><Plus className="h-4 w-4" />添加国家</Button>
-          <label className="mt-5 flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" checked={Boolean(getPath(draft, ["identity", "require_dynamic_residential_ip"], true))} onChange={(event) => update(["identity", "require_dynamic_residential_ip"], event.target.checked)} className="h-4 w-4 accent-teal-700" />强制动态住宅 IP</label>
         </Card>
 
         <Card className="p-5">
-          <h2 className="font-semibold text-slate-900">任务并发</h2>
+          <div className="flex items-center gap-2 text-slate-900"><Settings2 className="h-4 w-4 text-teal-700" /><h2 className="font-semibold">任务并发</h2></div>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <label className="text-xs font-medium text-slate-500">并发 flow<input type="number" min={1} max={64} value={Number(getPath(draft, ["concurrent_flows"], 1))} onChange={(event) => update(["concurrent_flows"], Number(event.target.value) || 1)} className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
             <label className="text-xs font-medium text-slate-500">最大任务数<input type="number" min={1} max={10000} value={Number(getPath(draft, ["max_tasks"], 1))} onChange={(event) => update(["max_tasks"], Number(event.target.value) || 1)} className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
@@ -191,20 +211,6 @@ export function ConfigPanel() {
           <label className="flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" checked={Boolean(getPath(draft, ["keepalive", "verify_existing_oauth_token"], true))} onChange={(event) => update(["keepalive", "verify_existing_oauth_token"], event.target.checked)} className="h-4 w-4 accent-teal-700" />保活时实际探针已有 refresh token</label>
           <label className="flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" checked={Boolean(getPath(draft, ["keepalive", "auto_import_hx_email"], true))} onChange={(event) => update(["keepalive", "auto_import_hx_email"], event.target.checked)} className="h-4 w-4 accent-teal-700" />有可用授权时自动加入 HX-Email</label>
         </div>
-      </Card>
-
-      <Card className="p-5">
-        <h2 className="font-semibold text-slate-900">HX-ProxyGroup 住宅会话</h2>
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <label className="text-xs font-medium text-slate-500 sm:col-span-2">控制面地址<input value={String(getPath(draft, ["proxy_rotation", "base_url"]))} onChange={(event) => update(["proxy_rotation", "base_url"], event.target.value)} className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
-          <label className="text-xs font-medium text-slate-500 sm:col-span-2">出口 IP 校验地址<input value={String(getPath(draft, ["proxy_rotation", "exit_ip_endpoint"]))} onChange={(event) => update(["proxy_rotation", "exit_ip_endpoint"], event.target.value)} className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
-          <label className="text-xs font-medium text-slate-500">完成后路由<select value={String(getPath(draft, ["proxy_rotation", "post_registration_route"], "residential"))} onChange={(event) => update(["proxy_rotation", "post_registration_route"], event.target.value)} className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-teal-500"><option value="residential">保持住宅会话</option><option value="upstream" disabled>上游代理（严格模式禁止）</option><option value="direct" disabled>直连（严格模式禁止）</option></select></label>
-          <label className="text-xs font-medium text-slate-500">国家回显<select value={String(getPath(draft, ["proxy_rotation", "require_country_echo"], false))} onChange={(event) => update(["proxy_rotation", "require_country_echo"], event.target.value === "true")} className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-teal-500"><option value="true">必须回显</option><option value="false">兼容旧协议</option></select></label>
-        </div>
-        <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-          {(["enabled", "session_scoped", "check_proxy", "enforce_unique_exit_ip", "verify_browser_exit_ip"] as const).map((key) => <label key={key} className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={Boolean(proxyRotation[key])} onChange={(event) => update(["proxy_rotation", key], event.target.checked)} className="h-4 w-4 accent-teal-700" />{key}</label>)}
-        </div>
-        <div className="mt-6 overflow-x-auto rounded-md border border-slate-200"><table className="w-full min-w-[620px] text-left text-xs"><thead className="border-b border-slate-200 bg-slate-50 text-slate-500"><tr><th className="px-3 py-2">渠道 token</th><th className="px-3 py-2">Listener</th><th className="px-3 py-2">国家</th></tr></thead><tbody className="divide-y divide-slate-100">{tokens.map((entry, index) => { const item = (entry && typeof entry === "object" && !Array.isArray(entry) ? entry : {}) as Record<string, ConfigValue>; return <tr key={index}><td className="px-3 py-2"><input value={inputValue(item.token || "")} onChange={(event) => { const next = JSON.parse(JSON.stringify(tokens)) as ConfigValue[]; (next[index] as Record<string, ConfigValue>).token = event.target.value === "已配置（留空保持）" ? CONFIGURED_VALUE : event.target.value; update(["proxy_rotation", "tokens"], next) }} className="h-8 w-full rounded border border-slate-200 px-2 text-slate-700" /></td><td className="px-3 py-2"><input value={inputValue(item.proxy || "")} onChange={(event) => { const next = JSON.parse(JSON.stringify(tokens)) as ConfigValue[]; (next[index] as Record<string, ConfigValue>).proxy = event.target.value === "已配置（留空保持）" ? CONFIGURED_VALUE : event.target.value; update(["proxy_rotation", "tokens"], next) }} className="h-8 w-full rounded border border-slate-200 px-2 text-slate-700" /></td><td className="px-3 py-2"><input value={String(item.country_code || "")} onChange={(event) => { const next = JSON.parse(JSON.stringify(tokens)) as ConfigValue[]; (next[index] as Record<string, ConfigValue>).country_code = event.target.value.toUpperCase(); update(["proxy_rotation", "tokens"], next) }} className="h-8 w-24 rounded border border-slate-200 px-2 text-slate-700" placeholder="US" /></td></tr> })}</tbody></table></div>
       </Card>
     </div>
   )

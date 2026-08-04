@@ -49,15 +49,22 @@ def process_single_flow(controller, proxy_pool=None):
         requested_country = identity_profile["country_code"]
 
         if proxy_pool is not None:
-            # 每个窗口使用同一渠道下的独立服务端会话。
-            if requested_country:
-                try:
-                    proxy_lease = proxy_pool.acquire_proxy(requested_country)
-                except TypeError:
-                    # Keep small third-party/test pool adapters source-compatible.
-                    proxy_lease = proxy_pool.acquire_proxy()
-            else:
+            # Automatic HX mode obtains the identity from the verified exit IP;
+            # the configured country pool is deliberately ignored in that mode.
+            if getattr(proxy_pool, "auto_identity", False):
                 proxy_lease = proxy_pool.acquire_proxy()
+                identity_profile = proxy_pool.identity_profile_for_lease(proxy_lease)
+                requested_country = identity_profile["country_code"]
+            else:
+                # 每个窗口使用同一渠道下的独立服务端会话。
+                if requested_country:
+                    try:
+                        proxy_lease = proxy_pool.acquire_proxy(requested_country)
+                    except TypeError:
+                        # Keep small third-party/test pool adapters source-compatible.
+                        proxy_lease = proxy_pool.acquire_proxy()
+                else:
+                    proxy_lease = proxy_pool.acquire_proxy()
             if getattr(controller, 'strict_isolation', False) and (
                 not getattr(proxy_lease, 'session_scoped', False)
                 or not str(getattr(proxy_lease, 'exit_ip', '')).strip()
@@ -338,13 +345,18 @@ if __name__ == "__main__":
 
     proxy_pool = None
     proxy_rotation_cfg = dict(data.get("proxy_rotation") or {})
+    auto_rotation = bool(str(
+        proxy_rotation_cfg.get("control_url")
+        or proxy_rotation_cfg.get("rotation_url")
+        or ""
+    ).strip())
     if strict_isolation:
         required = (
-            proxy_rotation_cfg.get("enabled")
-            and proxy_rotation_cfg.get("session_scoped")
-            and proxy_rotation_cfg.get("check_proxy")
-            and proxy_rotation_cfg.get("enforce_unique_exit_ip")
-            and proxy_rotation_cfg.get("verify_browser_exit_ip")
+            (auto_rotation or proxy_rotation_cfg.get("enabled"))
+            and (auto_rotation or proxy_rotation_cfg.get("session_scoped"))
+            and (auto_rotation or proxy_rotation_cfg.get("check_proxy"))
+            and (auto_rotation or proxy_rotation_cfg.get("enforce_unique_exit_ip"))
+            and (auto_rotation or proxy_rotation_cfg.get("verify_browser_exit_ip"))
             and data.get("isolate_hx_email_group", True)
             and data.get("prevent_direct_network_leaks", True)
         )
@@ -356,10 +368,10 @@ if __name__ == "__main__":
             )
             exit(1)
     proxy_rotation_cfg["required_pool_size"] = concurrent_flows
-    if proxy_rotation_cfg.get("enabled"):
+    if proxy_rotation_cfg.get("enabled") or auto_rotation:
         try:
             proxy_pool = RotatingProxyPool(proxy_rotation_cfg)
-            print(f"[ProxyRotate] 已启用 HX-ProxyGroup 住宅代理轮换, 共 {len(proxy_pool.entries)} 个渠道 token")
+            print("[ProxyRotate] 已启用 HX-ProxyGroup 住宅代理节点池")
         except ProxyRotationError as e:
             print(f"[ProxyRotate] 配置错误: {e}")
             exit(1)

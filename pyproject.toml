@@ -9,6 +9,6 @@ dependencies = [
     "faker>=40.36.0",
     "patchright>=1.61.2",
     "playwright>=1.62.0",
-    "requests>=2.34.2",
+    "requests[socks]>=2.34.2",
     "uvicorn[standard]>=0.34.0",
 ]
