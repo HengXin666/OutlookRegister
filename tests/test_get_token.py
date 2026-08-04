@@ -1,6 +1,7 @@
 import unittest
+import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 from get_token import (
     OAuthRecoveryChallengeError,
@@ -183,7 +184,17 @@ class OAuthProxyTests(unittest.TestCase):
         session = MagicMock()
         session.post.return_value = response
 
-        with patch("get_token.handle_oauth2_form"), patch(
+        config = {
+            "email_suffix": "@outlook.com",
+            "oauth2": {
+                "Scopes": ["offline_access"],
+                "client_id": "client-id",
+                "redirect_url": "http://localhost:8000/token-tool/callback",
+            },
+        }
+        with patch("builtins.open", mock_open(read_data=json.dumps(config))), patch(
+            "get_token.handle_oauth2_form"
+        ), patch(
             "get_token.requests.Session", return_value=session
         ):
             result = _try_get_access_token(
