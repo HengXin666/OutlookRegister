@@ -112,10 +112,10 @@ class MainFlowIsolationTests(unittest.TestCase):
         controller = FakeController(events)
         proxy_pool = FakeProxyPool(events)
 
-        with patch("main.random_email", return_value="flow-user"), patch(
-            "main.generate_strong_password", return_value="password"
+        with patch("src.outlookregister.core.flow_processor.random_email", return_value="flow-user"), patch(
+            "src.outlookregister.core.flow_processor.generate_strong_password", return_value="password"
         ), patch(
-            "main.get_access_token",
+            "src.outlookregister.core.flow_processor.get_access_token",
             return_value=(False, False, False),
         ) as get_access_token:
             result = process_single_flow(controller, proxy_pool)
@@ -148,10 +148,10 @@ class MainFlowIsolationTests(unittest.TestCase):
         controller = FakeController(events)
         proxy_pool = FakeProxyPool(events)
 
-        with patch("main.random_email", return_value="flow-user"), patch(
-            "main.generate_strong_password", return_value="password"
+        with patch("src.outlookregister.core.flow_processor.random_email", return_value="flow-user"), patch(
+            "src.outlookregister.core.flow_processor.generate_strong_password", return_value="password"
         ), patch(
-            "main.get_access_token",
+            "src.outlookregister.core.flow_processor.get_access_token",
             return_value=("refresh", "access", 123),
         ), patch("builtins.open", mock_open()):
             result = process_single_flow(controller, proxy_pool)
@@ -183,12 +183,12 @@ class MainFlowIsolationTests(unittest.TestCase):
         }
         proxy_pool = FakeProxyPool(events)
 
-        with patch("main.select_identity_profile") as select_profile, patch(
-            "main.random_email", return_value="flow-user"
+        with patch("src.outlookregister.core.flow_processor.select_identity_profile") as select_profile, patch(
+            "src.outlookregister.core.flow_processor.random_email", return_value="flow-user"
         ), patch(
-            "main.generate_strong_password", return_value="password"
+            "src.outlookregister.core.flow_processor.generate_strong_password", return_value="password"
         ), patch(
-            "main.get_access_token", return_value=(False, False, False)
+            "src.outlookregister.core.flow_processor.get_access_token", return_value=(False, False, False)
         ):
             select_profile.return_value = {
                 "country_code": "GB",
