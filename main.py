@@ -34,7 +34,7 @@ def process_single_flow(controller, proxy_pool=None):
     traffic_started = False
 
     try:
-        if getattr(controller, 'strict_isolation', False) and proxy_pool is None:
+        if getattr(controller, 'strict_isolation', False) and proxy_pool is None and not getattr(controller, 'debug', False):
             raise ProxyRotationError(
                 'strict_isolation=true 时必须为每个 flow 提供代理租约'
             )
@@ -337,6 +337,7 @@ if __name__ == "__main__":
     max_tasks = data["max_tasks"]
     concurrent_flows = data["concurrent_flows"]
     strict_isolation = bool(data.get("strict_isolation", True))
+    debug = bool(data.get("debug", False))
 
     validation_errors = validate_config(data, for_run=True)
     if validation_errors:
@@ -350,7 +351,7 @@ if __name__ == "__main__":
         or proxy_rotation_cfg.get("rotation_url")
         or ""
     ).strip())
-    if strict_isolation:
+    if strict_isolation and not debug:
         required = (
             (auto_rotation or proxy_rotation_cfg.get("enabled"))
             and (auto_rotation or proxy_rotation_cfg.get("session_scoped"))
@@ -368,7 +369,7 @@ if __name__ == "__main__":
             )
             exit(1)
     proxy_rotation_cfg["required_pool_size"] = concurrent_flows
-    if proxy_rotation_cfg.get("enabled") or auto_rotation:
+    if (proxy_rotation_cfg.get("enabled") or auto_rotation) and not debug:
         try:
             proxy_pool = RotatingProxyPool(proxy_rotation_cfg)
             print("[ProxyRotate] 已启用 HX-ProxyGroup 住宅代理节点池")

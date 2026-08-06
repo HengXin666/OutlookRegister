@@ -2214,6 +2214,8 @@ class DashboardActionRunner:
                     print(f"[Dashboard Proxy] 释放会话失败: {exc}")
 
     def _proxy_pool(self, config: dict[str, Any], required_pool_size: int):
+        if config.get("debug"):
+            return None
         if not config.get("proxy_rotation"):
             # Keep lightweight adapters usable, but never let a configured
             # dynamic/strict deployment silently fall back to direct traffic.

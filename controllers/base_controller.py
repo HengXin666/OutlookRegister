@@ -49,7 +49,11 @@ class BaseBrowserController(ABC):
         self.max_captcha_retries = data['max_captcha_retries']
         self.enable_oauth2 = data["oauth2"]['enable_oauth2']
         self.proxy = data['proxy']
-        self.strict_isolation = bool(data.get('strict_isolation', True))
+        self.debug = bool(data.get('debug', False))
+        if self.debug:
+            self.strict_isolation = False
+        self.strict_isolation = bool(data.get('strict_isolation', True)) and not self.debug
+
         self.isolate_hx_email_group = bool(
             data.get('isolate_hx_email_group', self.strict_isolation)
         )
@@ -209,7 +213,7 @@ class BaseBrowserController(ABC):
         flow_proxy = getattr(self.thread_local, 'proxy', None)
         if flow_proxy:
             return flow_proxy
-        if getattr(self, "require_dynamic_residential_ip", False):
+        if getattr(self, "require_dynamic_residential_ip", False) and not getattr(self, "debug", False):
             return None
         return getattr(self, "proxy", None)
 
@@ -251,7 +255,7 @@ class BaseBrowserController(ABC):
             or ''
         ).strip()
         args = [f'--lang={browser_locale}'] if browser_locale else []
-        if self.prevent_direct_network_leaks:
+        if self.prevent_direct_network_leaks and not getattr(self, "debug", False):
             args.extend(
                 (
                     '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',

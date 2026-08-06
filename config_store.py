@@ -294,7 +294,7 @@ def validate_config(config: dict[str, Any], *, for_run: bool = False) -> list[st
             config.get("strict_isolation", True),
         )
     )
-    if for_run and require_dynamic:
+    if for_run and require_dynamic and not config.get("debug", False):
         if auto_identity:
             # A full /ctl/<token> URL is the complete user-facing input. The
             # runtime discovers the HTTP/SOCKS data-plane endpoint from the
@@ -366,7 +366,10 @@ class ConfigStore:
 
     def read(self) -> dict[str, Any]:
         with self._lock:
-            return _read_json(self.path)
+            value = _read_json(self.path)
+            if isinstance(value, dict) and os.environ.get("OUTLOOK_DEBUG", "").strip() in {"1", "true", "yes", "on"}:
+                value = {**value, "debug": True}
+            return value
 
     def revision(self) -> str:
         try:

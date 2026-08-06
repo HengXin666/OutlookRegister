@@ -2,6 +2,7 @@
     "choose_browser": "patchright",
     "email_suffix": "@outlook.com",
     "proxy": "",
+    "debug": false,
     "strict_isolation": true,
     "isolate_hx_email_group": true,
     "prevent_direct_network_leaks": true,
