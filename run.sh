@@ -23,4 +23,4 @@ else
   echo "dashboard 前端已构建，跳过（删除 dashboard/dist 可强制重建）"
 fi
 
-exec uv run uvicorn dashboard_server:app --host 127.0.0.1 --port 8765
+exec uv run uvicorn src.outlookregister.dashboard.dashboard_server:app --host 127.0.0.1 --port 8765

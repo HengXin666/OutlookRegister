@@ -12,3 +12,9 @@ dependencies = [
     "requests[socks]>=2.34.2",
     "uvicorn[standard]>=0.34.0",
 ]
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/outlookregister"]

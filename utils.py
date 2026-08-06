@@ -1,29 +1,14 @@
-import random
-import string
-import secrets
+"""兼容垫片：转发到 src/outlookregister/config.utils。
 
-def random_email(length=random.randint(12,14)):
+将旧导入路径解析为目标模块本身，旧 ``from <name> import ...``（含私有名）继续可用。
+新代码应直接从 ``src.outlookregister.config.utils`` 导入。
+"""
+import sys as _sys
+from pathlib import Path as _Path
 
-    first_char = random.choice(string.ascii_lowercase)
+_src_parent = str(_Path(__file__).resolve().parent)
+if _src_parent not in _sys.path:
+    _sys.path.insert(0, _src_parent)
 
-    other_chars = []
-    for _ in range(length - 1):  
-        if random.random() < 0.07:  
-            other_chars.append(random.choice(string.digits))
-        else: 
-            other_chars.append(random.choice(string.ascii_lowercase))
-
-    return first_char + ''.join(other_chars)
-
-def generate_strong_password(length=random.randint(11, 15)):
-
-    chars = string.ascii_letters + string.digits + "!@#$%^&*"
-
-    while True:
-        password = ''.join(secrets.choice(chars) for _ in range(length))
-
-        if (any(c.islower() for c in password) 
-                and any(c.isupper() for c in password)
-                and any(c.isdigit() for c in password)
-                and any(c in "!@#$%^&*" for c in password)):
-            return password
+import src.outlookregister.config.utils as _target
+_sys.modules[__name__] = _target
