@@ -26,25 +26,25 @@ Outlook 注册机
 HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
 1. 启动 HX-ProxyGroup。在「代理服务」页面找到对应住宅渠道服务，选择“复制自动化控制 URL”获得完整 HTTPS 地址（`https://主机/ctl/<control-token>`）；该 URL 是唯一需要在本项目面板中填写的住宅配置。
 2. 「供应商」页：先创建住宅代理供应商——BestProxy 预设已内置官方语法，或选择「API 提取」模式直接填 BestProxy 提取链接（`https://bestproxy.com/api/v2/<提取ID>?app_key=...`，无需账号密码）。保存后用「测试连接」确认能取到出口 IP。
-3. 「渠道」页：选择 **sticky** 模式，设置不小于 OutlookRegister 并发数的「会话数量」，再按部署选择 VLESS、VMess 或 Trojan WebSocket。HX-ProxyGroup 只向公网发布经过 CF/雷池的 WS 入口，不需要为浏览器额外开放 HTTP、SOCKS5 或 Mixed 直连端口。
+3. 「渠道」页：选择 **sticky** 模式，设置不小于 OutlookRegister 并发数的「会话数量」。要让 VPS 只负责申请 IP、完全不承载浏览器业务流量，供应商必须使用 **API 提取** 模式；账密网关不会向客户端下发供应商主凭据。渠道的 VLESS、VMess 或 Trojan WebSocket 入口继续作为非 API 提取模式的兼容数据面。
 4. 点击校验后，程序调用 `GET /ctl/<token>/nodes` 读取固定节点池，从进程内租用一个空闲节点，再调用该节点的 `/next` 刷新服务端内部住宅出口。节点名、代理账号和入口保持不变，普通用户无需看到供应商会话或出口 IP 的轮换细节。
-5. 程序优先使用返回的浏览器兼容 `proxy_url`；纯 WS 渠道的 `proxy_url` 为 `null` 时，会从 `endpoints[]` 选择 VLESS/VMess/Trojan WS URI，自动启动短生命周期的本机 Mihomo，并把环回 HTTP 代理交给 Playwright。随后程序通过固定 HTTPS 地理探针确认出口 IP、国家代码和 IANA 时区，并据此自动选择浏览器语言和时区。
+5. API 提取渠道在 `/next` 成功后返回高权限 `residential_endpoint`（协议、IP/主机、端口和节点级鉴权）；程序优先让本机 Mihomo 直接拨号该端点，并把环回 HTTP 代理交给 Playwright。首实例优先使用 `http://127.0.0.1:2334`，端口占用或并发时每个 flow 使用独立随机环回端口。没有该字段时才使用浏览器兼容 `proxy_url` 或 `endpoints[]` 的 WS URI。随后程序通过固定 HTTPS 地理探针确认出口 IP、国家代码和 IANA 时区，并据此自动选择浏览器语言和时区。
 6. 校验成功会自动启用住宅路由、出口检查、活动出口 IP 去重、浏览器出口复核和防直连开关，并保存配置。
 7. 每个 flow 独占一个声明节点；flow 结束只归还 OutlookRegister 进程内租约，不删除服务端节点。节点池全部占用时会明确报错，应降低并发或增加渠道会话数。
 8. 校验失败不会保存新的控制 URL；只有控制接口、代理入口、住宅出口和国家/时区确认全部通过时才显示成功。
 
-控制 URL 是 bearer 凭据，不是普通公开链接。它应只通过 HTTPS 使用，不要放进截图、工单、浏览器分享或公共日志；若怀疑泄露，应在 HX-ProxyGroup 管理页轮换控制令牌并同步更新配置。客户端不会跟随控制面重定向，也不会在错误日志中输出完整 URL 或 token。
+控制 URL 是高权限 bearer 凭据，不是普通公开链接。它可以触发节点提取、消耗供应商配额，并在 API 提取模式读取临时住宅节点鉴权。它应只通过 HTTPS 使用，不要放进截图、工单、浏览器分享或公共日志；若怀疑泄露，应在 HX-ProxyGroup 管理页轮换控制令牌并同步更新配置。客户端不会跟随控制面重定向，也不会在错误日志中输出完整 URL、token 或住宅端点凭据。
 
 顶层`proxy`不参与严格动态住宅运行。启用住宅节点池后，注册、密保、OAuth 浏览器和 token 交换都会使用当前 flow 的节点租约；同一个 flow 从头到尾固定节点、国家、浏览器语言、时区和出口 IP，另一个 flow 才会租用其他空闲节点。选中的国家、语言、时区、节点和出口 IP 会写入检查点及流量记录。HX-Email 控制 API 仍访问配置的服务地址，导入账号使用独立分组；控制面本身不会进入 HX-ProxyGroup 的实际代理转发路径。
 
-并行租约与切流说明：每个 flow 开始时从 `GET /ctl/<token>/nodes` 的声明节点中租用一个空闲项，并调用 `POST /ctl/<token>/nodes/<index>/next` 换出站 IP；随后通过节点的浏览器兼容入口或由 `endpoints[]` 启动的本机 Mihomo 环回入口确认出口 IP、国家和时区，再固定对应浏览器身份。注册、密保、OAuth 和完成后的 HX-Email 导入贯穿使用同一个 flow 身份；`post_registration_route`固定为`residential`。请同时保证渠道`session_count`和供应商`max_concurrent_sessions`不小于住宅并发数。可用 `HX_MIHOMO_BIN` 指定 Mihomo 可执行文件；每个本地实例只监听随机 `127.0.0.1` 端口，并在 flow 释放后停止。旧版`rotation_url`以及分离式`base_url`、`tokens`仍兼容，但不再是推荐配置。
+并行租约与切流说明：同一 control URL 的租约在整个进程内共享，即使不同批量任务各自创建代理池，也不会同时领取同一 index。每个 flow 调用 `POST /ctl/<token>/nodes/<index>/next` 换出站 IP；API 提取模式通过 `residential_endpoint` 建立 `浏览器 -> 本机 Mihomo -> 住宅 IP:port`，其他模式再使用浏览器兼容入口或 `endpoints[]`。注册、密保、OAuth 和完成后的 HX-Email 导入贯穿使用同一个 flow 身份；`post_registration_route`固定为`residential`。请同时保证渠道`session_count`和供应商`max_concurrent_sessions`不小于住宅并发数。可用 `HX_MIHOMO_BIN` 指定 Mihomo 可执行文件；本机首实例优先监听 `127.0.0.1:2334`，并发实例使用互不共享的独立环回端口，并在 flow 释放后停止。旧版`rotation_url`以及分离式`base_url`、`tokens`仍兼容，但不再是推荐配置。
 
 完全注册流程：面板提交任务后依次执行「注册」→「填写密保邮箱」→「获取 OAuth 授权」→「加入 HX-Email」。每个阶段会写入检查点；后续阶段失败不会丢失已生成的账号凭据。
 
-完全保活流程：在面板选择账号和「账号密码登录」或「密保邮箱取件登录」→如出现按压/人工验证，浏览器保持打开并在面板点击「继续」→如缺少授权则补充 OAuth→如配置启用则加入 HX-Email。整个流程复用同一个住宅节点租约，人工验证超时后需要重新提交该账号的保活任务。
+完全保活流程：在面板选择账号和「账号密码登录」或「密保邮箱取件登录」→如出现账号锁定页，自动点击「继续」并执行有界的按压验证→仍未通过时保留浏览器等待人工处理→如缺少授权则补充 OAuth→如配置启用则加入 HX-Email。保活队列会显示当前步骤和最近运行日志；运行中可随时点击「暂停」，工作线程到达安全检查点后停止自动化但不关闭已经启动的浏览器，人工操作后点击「继续」会从当前页面重新识别。整个流程复用同一个住宅节点租约，人工验证超时后需要重新提交该账号的保活任务。
 
 保活的“如有”判定基准：
-1. 人工验证：页面状态机检测可见的`#px-captcha`、`hsprotect`/验证 iframe 或多语言安全挑战文本；点击面板“继续”后会重新扫描，挑战仍在时不会继续后续阶段。
+1. 人工验证：账号锁定页的按压验证会自动尝试两次，每次完成真实的 mouse down/hold/up 后重新识别页面。找不到继续按钮、找不到按压目标或两次后挑战仍存在时，页面状态机会进入人工处理；点击面板“继续”后会重新扫描，挑战仍在时不会继续后续阶段。该自动处理只存在于保活路径，不改变注册流程。
 2. 补充授权：先读取本地 refresh token；默认通过当前 HX-ProxyGroup flow 向 Microsoft token endpoint 做一次实际 refresh 探针。缺失、空值或探针返回`invalid_grant`等失败时，才使用当前已登录浏览器会话补充 OAuth/Graph 授权，并在失败后尝试同一 flow 的独立浏览器 Context。探针和 token 交换都关闭系统代理环境继承。
 3. 加入 HX-Email：只有拿到可用 refresh token 且`keepalive.auto_import_hx_email=true`才执行。HX-Email 导入完成后会重新查询账号、写入账号信息和邮件池，并调用 refresh 接口验证授权；这些步骤全部成功后才写入`hx_email_imported`检查点。
 

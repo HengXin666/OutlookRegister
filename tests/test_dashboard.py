@@ -3,11 +3,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dashboard_server import DashboardStore
+from dashboard_server import DashboardStore, _interactive_proxy_config
 from traffic_tracker import TrafficRecorder, stage_for_hx_email_path
 
 
 class DashboardStoreTests(unittest.TestCase):
+    def test_interactive_proxy_check_has_a_bounded_retry_budget(self):
+        runtime_config = {
+            "control_url": "https://proxy.example/ctl/control-token",
+            "timeout_seconds": 30,
+            "max_rotate_retries": 6,
+        }
+
+        interactive = _interactive_proxy_config(runtime_config)
+
+        self.assertEqual(interactive["timeout_seconds"], 10)
+        self.assertEqual(interactive["max_rotate_retries"], 0)
+        self.assertEqual(runtime_config["max_rotate_retries"], 6)
+
     def test_snapshot_merges_four_milestones_and_traffic_without_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
             results = Path(directory)

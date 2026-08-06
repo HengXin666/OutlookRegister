@@ -1,8 +1,14 @@
 import unittest
 import shutil
+import socket
 from urllib.parse import urlsplit
 
-from managed_mihomo import ManagedMihomo, ManagedMihomoError, build_mihomo_config
+from managed_mihomo import (
+    ManagedMihomo,
+    ManagedMihomoError,
+    _available_loopback_port,
+    build_mihomo_config,
+)
 
 
 class ManagedMihomoConfigTests(unittest.TestCase):
@@ -37,6 +43,15 @@ class ManagedMihomoConfigTests(unittest.TestCase):
                 self.assertEqual(config["proxies"][0]["type"], protocol)
                 self.assertEqual(config["proxies"][0]["network"], "ws")
                 self.assertTrue(config["proxies"][0]["tls"])
+                self.assertEqual(config["log-level"], "warning")
+                self.assertEqual(config["dns"]["enhanced-mode"], "redir-host")
+                self.assertEqual(
+                    config["dns"]["proxy-server-nameserver"],
+                    [
+                        "https://1.1.1.1/dns-query",
+                        "https://8.8.8.8/dns-query",
+                    ],
+                )
 
     def test_rejects_non_websocket_or_unknown_endpoint(self):
         for endpoint in (
@@ -46,6 +61,33 @@ class ManagedMihomoConfigTests(unittest.TestCase):
             with self.subTest(endpoint=endpoint):
                 with self.assertRaises(ManagedMihomoError):
                     build_mihomo_config(endpoint, 17891)
+
+    def test_builds_direct_residential_http_and_socks_endpoints(self):
+        for protocol, tls in (("http", False), ("http", True), ("socks5", False)):
+            with self.subTest(protocol=protocol, tls=tls):
+                config = build_mihomo_config({
+                    "protocol": protocol,
+                    "transport": "tcp",
+                    "server": "11.22.33.44",
+                    "port": 8000,
+                    "username": "node-user",
+                    "password": "node-password",
+                    "tls": tls,
+                }, 2334)
+                proxy = config["proxies"][0]
+                self.assertEqual(proxy["type"], protocol)
+                self.assertEqual(proxy["server"], "11.22.33.44")
+                self.assertEqual(proxy["port"], 8000)
+                self.assertTrue(proxy.get("username") and proxy.get("password"))
+                self.assertEqual(proxy.get("tls", False), tls)
+
+    def test_preferred_loopback_port_falls_back_when_already_bound(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            preferred = int(occupied.getsockname()[1])
+            selected = _available_loopback_port(preferred)
+        self.assertNotEqual(selected, preferred)
+        self.assertGreater(selected, 0)
 
     @unittest.skipUnless(shutil.which("mihomo"), "mihomo is not installed")
     def test_real_mihomo_starts_on_loopback_and_stops(self):
@@ -58,6 +100,26 @@ class ManagedMihomoConfigTests(unittest.TestCase):
                     "vless://550e8400-e29b-41d4-a716-446655440000@proxy.example.com:443"
                     "?security=tls&type=ws&host=proxy.example.com&path=%2Fedge%2Fvless"
                 ),
+            })
+            parsed = urlsplit(proxy_url)
+            self.assertEqual(parsed.scheme, "http")
+            self.assertEqual(parsed.hostname, "127.0.0.1")
+            self.assertGreater(parsed.port or 0, 0)
+        finally:
+            manager.close()
+
+    @unittest.skipUnless(shutil.which("mihomo"), "mihomo is not installed")
+    def test_real_mihomo_accepts_extracted_residential_endpoint(self):
+        manager = ManagedMihomo(start_timeout=5)
+        try:
+            proxy_url = manager.start(1, {
+                "protocol": "http",
+                "transport": "tcp",
+                "server": "203.0.113.10",
+                "port": 8000,
+                "username": "node-user",
+                "password": "node-password",
+                "tls": False,
             })
             parsed = urlsplit(proxy_url)
             self.assertEqual(parsed.scheme, "http")

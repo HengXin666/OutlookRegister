@@ -1,4 +1,4 @@
-"""Bounded local Mihomo instances for HX WebSocket residential endpoints."""
+"""Bounded local Mihomo instances for HX residential endpoints."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -17,6 +18,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 
 SUPPORTED_PROTOCOLS = {"vless", "vmess", "trojan"}
+SUPPORTED_RESIDENTIAL_PROTOCOLS = {"http", "socks5"}
+PREFERRED_LOCAL_PORT = 2334
 
 
 class ManagedMihomoError(Exception):
@@ -30,19 +33,37 @@ def build_mihomo_config(endpoint: dict, local_port: int) -> dict:
     protocol = str(endpoint.get("protocol") or "").strip().casefold()
     transport = str(endpoint.get("transport") or "").strip().casefold()
     uri = str(endpoint.get("uri") or "").strip()
-    if protocol not in SUPPORTED_PROTOCOLS or transport != "ws":
-        raise ManagedMihomoError("本机 Mihomo 只接受 VLESS/VMess/Trojan WebSocket 端点")
-    if not uri or len(uri) > 8192 or any(character.isspace() for character in uri):
-        raise ManagedMihomoError("HX-ProxyGroup 数据端点 URI 无效")
     if not isinstance(local_port, int) or local_port < 1 or local_port > 65535:
         raise ManagedMihomoError("本机 Mihomo 监听端口无效")
 
-    proxy = _parse_vmess(uri) if protocol == "vmess" else _parse_standard_uri(protocol, uri)
+    if protocol in SUPPORTED_RESIDENTIAL_PROTOCOLS and transport == "tcp":
+        proxy = _parse_residential_endpoint(protocol, endpoint)
+    elif protocol in SUPPORTED_PROTOCOLS and transport == "ws":
+        if not uri or len(uri) > 8192 or any(character.isspace() for character in uri):
+            raise ManagedMihomoError("HX-ProxyGroup 数据端点 URI 无效")
+        proxy = _parse_vmess(uri) if protocol == "vmess" else _parse_standard_uri(protocol, uri)
+    else:
+        raise ManagedMihomoError(
+            "本机 Mihomo 只接受 HTTP/SOCKS5 住宅端点或 VLESS/VMess/Trojan WebSocket 端点"
+        )
     proxy["name"] = "hx-residential"
     return {
         "mode": "rule",
-        "log-level": "silent",
+        "log-level": "warning",
         "allow-lan": False,
+        "dns": {
+            "enable": True,
+            "ipv6": False,
+            "enhanced-mode": "redir-host",
+            "nameserver": [
+                "https://1.1.1.1/dns-query",
+                "https://8.8.8.8/dns-query",
+            ],
+            "proxy-server-nameserver": [
+                "https://1.1.1.1/dns-query",
+                "https://8.8.8.8/dns-query",
+            ],
+        },
         "proxies": [proxy],
         "proxy-groups": [{
             "name": "HX-RESIDENTIAL",
@@ -59,6 +80,42 @@ def build_mihomo_config(endpoint: dict, local_port: int) -> dict:
         }],
         "rules": ["MATCH,HX-RESIDENTIAL"],
     }
+
+
+def _parse_residential_endpoint(protocol: str, endpoint: dict) -> dict:
+    server = str(endpoint.get("server") or "").strip()
+    username = str(endpoint.get("username") or "")
+    password = str(endpoint.get("password") or "")
+    try:
+        port = int(endpoint.get("port"))
+    except (TypeError, ValueError) as exc:
+        raise ManagedMihomoError("HX-ProxyGroup 住宅端点端口无效") from exc
+    if (
+        not server
+        or len(server) > 253
+        or any(character.isspace() for character in server)
+        or port < 1
+        or port > 65535
+    ):
+        raise ManagedMihomoError("HX-ProxyGroup 住宅端点主机或端口无效")
+    if len(username) > 512 or len(password) > 1024 or (password and not username):
+        raise ManagedMihomoError("HX-ProxyGroup 住宅端点鉴权字段无效")
+    tls = endpoint.get("tls") is True
+    if protocol == "socks5" and tls:
+        raise ManagedMihomoError("SOCKS5 住宅端点不能启用 HTTP TLS")
+    proxy = {
+        "type": protocol,
+        "server": server,
+        "port": port,
+    }
+    if username:
+        proxy["username"] = username
+        proxy["password"] = password
+    if tls:
+        proxy["tls"] = True
+    if protocol == "socks5":
+        proxy["udp"] = True
+    return proxy
 
 
 def _parse_standard_uri(protocol: str, uri: str) -> dict:
@@ -165,7 +222,7 @@ class ManagedMihomo:
         with self._lock:
             self._stop_locked(node_index)
             executable = self._resolve_binary()
-            local_port = _available_loopback_port()
+            local_port = _available_loopback_port(PREFERRED_LOCAL_PORT)
             config = build_mihomo_config(endpoint, local_port)
             directory = tempfile.TemporaryDirectory(prefix=f"outlook-hx-{node_index}-")
             config_path = Path(directory.name) / "config.json"
@@ -208,6 +265,42 @@ class ManagedMihomo:
         with self._lock:
             self._stop_locked(node_index)
 
+    def is_active(self, node_index: int) -> bool:
+        with self._lock:
+            return node_index in self._instances
+
+    def failure_detail(self, node_index: int) -> str:
+        """Return a bounded Mihomo warning before the short-lived instance stops."""
+        with self._lock:
+            instance = self._instances.get(node_index)
+            if instance is None:
+                return ""
+            try:
+                instance.log_handle.flush()
+                lines = (Path(instance.directory.name) / "mihomo.log").read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                ).splitlines()
+            except OSError:
+                return ""
+            warnings = [
+                line for line in lines
+                if "level=warning" in line or "level=error" in line
+            ]
+            if not warnings:
+                return ""
+            detail = warnings[-1][-1000:]
+            detail = re.sub(
+                r"(?i)\b(?:vless|vmess|trojan)://\S+",
+                "[redacted endpoint]",
+                detail,
+            )
+            return re.sub(
+                r"(?i)\b(https?|socks5)://[^@\s]+@",
+                r"\1://[redacted]@",
+                detail,
+            )
+
     def close(self) -> None:
         with self._lock:
             for node_index in list(self._instances):
@@ -249,7 +342,13 @@ class ManagedMihomo:
         instance.directory.cleanup()
 
 
-def _available_loopback_port() -> int:
+def _available_loopback_port(preferred_port: int | None = None) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        if preferred_port is not None:
+            try:
+                listener.bind(("127.0.0.1", preferred_port))
+                return int(listener.getsockname()[1])
+            except OSError:
+                pass
         listener.bind(("127.0.0.1", 0))
         return int(listener.getsockname()[1])

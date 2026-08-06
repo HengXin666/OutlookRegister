@@ -202,13 +202,40 @@ def handle_oauth2_form(
         proof_email_input = visible_first((
             '#proof-confirmation-email-input',
             'input[name="proofConfirmationEmail"]',
+            'input[name="ProofConfirmationEmail"]',
             'input[data-testid="proof-confirmation-email-input"]',
         ))
+        if proof_email_input is None:
+            try:
+                proof_url = str(page.url or '').casefold()
+                proof_body = ' '.join(
+                    page.locator('body').inner_text(timeout=1000).split()
+                ).casefold()
+            except Exception:
+                proof_url = ''
+                proof_body = ''
+            if '/proofs/' in proof_url or any(
+                marker in proof_body
+                for marker in (
+                    'recovery email',
+                    'alternate email',
+                    '备用邮箱',
+                    '恢复邮箱',
+                )
+            ):
+                proof_email_input = visible_first((
+                    'input[autocomplete="email"]',
+                    'input[type="email"]',
+                    'input[name="EmailAddress"]',
+                    'input[name="proof"]',
+                ))
         proof_code_input = visible_first((
             'input[id^="codeEntry-"]',
             '#proof-confirmation-code-input',
             '#otc-confirmation-input',
+            '#iOttText',
             'input[name="otc"]',
+            'input[name="ProofConfirmationCode"]',
             'input[name="code"]',
             'input[autocomplete="one-time-code"]',
             'input[inputmode="numeric"]',

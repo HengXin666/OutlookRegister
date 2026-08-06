@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import asyncio
 import os
+from queue import Empty
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -162,6 +163,19 @@ def _automatic_proxy_config(
         "timeout_seconds": current_rotation.get("timeout_seconds", 10),
         "max_rotate_retries": current_rotation.get("max_rotate_retries", 2),
         "required_pool_size": 0,
+    }
+
+
+def _interactive_proxy_config(proxy_config: dict[str, Any]) -> dict[str, Any]:
+    """Bound dashboard checks without changing the saved runtime retry policy."""
+    try:
+        timeout = float(proxy_config.get("timeout_seconds", 10))
+    except (TypeError, ValueError):
+        timeout = 10
+    return {
+        **proxy_config,
+        "timeout_seconds": min(max(timeout, 1), 10),
+        "max_rotate_retries": 0,
     }
 
 
@@ -696,7 +710,7 @@ def check_proxy_rotation(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         current_config = CONFIG_STORE.read()
         proxy_config = _automatic_proxy_config(control_url, current_config)
-        pool = RotatingProxyPool(proxy_config)
+        pool = RotatingProxyPool(_interactive_proxy_config(proxy_config))
         verification = pool.check_connection()
         updated = CONFIG_STORE.update({
             "proxy": "",
@@ -764,6 +778,34 @@ def get_account_actions() -> dict[str, Any]:
     return {"accounts": ACTION_RUNNER.snapshot()}
 
 
+@app.get("/api/account-actions/stream")
+async def account_actions_stream(request: Request):
+    subscriber = ACTION_RUNNER.subscribe()
+
+    async def events():
+        try:
+            yield f"event: account-snapshot\ndata: {json.dumps({'accounts': ACTION_RUNNER.snapshot()}, ensure_ascii=False)}\n\n"
+            while not await request.is_disconnected():
+                try:
+                    payload = await asyncio.to_thread(subscriber.get, True, 15)
+                except Empty:
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"event: account-action\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        finally:
+            ACTION_RUNNER.unsubscribe(subscriber)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/api/workflows")
 def get_workflows() -> dict[str, Any]:
     return {"jobs": WORKFLOW_RUNNER.snapshot()}
@@ -819,10 +861,36 @@ def run_account_action(
 
 
 @app.post("/api/accounts/{email}/actions/{action}/resume", status_code=202)
-def resume_account_action(email: str, action: str) -> dict[str, Any]:
+def resume_account_action(
+    email: str,
+    action: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     normalized_action = action.replace("-", "_").strip().casefold()
     try:
-        state = ACTION_RUNNER.resume_verification(email, normalized_action)
+        state = ACTION_RUNNER.resume(
+            email,
+            normalized_action,
+            str((payload or {}).get("step") or "").strip() or None,
+        )
+    except DashboardActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"action": state}
+
+
+@app.post("/api/accounts/{email}/actions/{action}/pause", status_code=202)
+def pause_account_action(
+    email: str,
+    action: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_action = action.replace("-", "_").strip().casefold()
+    try:
+        state = ACTION_RUNNER.pause(
+            email,
+            normalized_action,
+            str((payload or {}).get("step") or "").strip() or None,
+        )
     except DashboardActionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return {"action": state}

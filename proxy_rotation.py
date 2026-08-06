@@ -1,8 +1,10 @@
 from dataclasses import dataclass, replace
+import hashlib
 import ipaddress
 import json
 import threading
 import time
+import weakref
 from urllib.parse import quote, urlsplit, urlunsplit
 import uuid
 
@@ -27,6 +29,32 @@ from identity_profiles import (
 
 class ProxyRotationError(Exception):
     """住宅代理服务端换 IP 失败时抛出。"""
+
+
+class _DeclaredLeaseState:
+    """Process-wide ownership for one high-privilege control URL."""
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.leased_node_indexes: set[int] = set()
+        self.active_exit_ips: dict[str, tuple[str, str]] = {}
+        self.next_index = 0
+
+
+_declared_states_lock = threading.Lock()
+_declared_states = weakref.WeakValueDictionary()
+
+
+def _declared_lease_state(control_url: str) -> _DeclaredLeaseState:
+    # Hash the bearer URL so the process registry cannot accidentally expose it
+    # through diagnostics or object representations.
+    key = hashlib.sha256(control_url.encode("utf-8")).hexdigest()
+    with _declared_states_lock:
+        state = _declared_states.get(key)
+        if state is None:
+            state = _DeclaredLeaseState()
+            _declared_states[key] = state
+        return state
 
 
 @dataclass(frozen=True)
@@ -188,8 +216,17 @@ class RotatingProxyPool:
         self._lock = threading.Lock()
         self._allocation_lock = threading.Lock()
         self._request_lock = threading.Lock()
-        self._active_exit_ips: dict[str, tuple[str, str]] = {}
-        self._leased_node_indexes: set[int] = set()
+        self._declared_state = (
+            _declared_lease_state(f"{self.base_url}{self.control_path}")
+            if self.declared_pool
+            else None
+        )
+        self._active_exit_ips: dict[str, tuple[str, str]] = (
+            self._declared_state.active_exit_ips if self._declared_state else {}
+        )
+        self._leased_node_indexes: set[int] = (
+            self._declared_state.leased_node_indexes if self._declared_state else set()
+        )
         self._control_nodes_loaded = False
         self._next_index = 0
         self._local_data_plane = ManagedMihomo() if self.declared_pool else None
@@ -421,7 +458,7 @@ class RotatingProxyPool:
             self._release_exit_ip(lease)
             if self._local_data_plane is not None:
                 self._local_data_plane.stop(lease.node_index)
-            with self._lock:
+            with self._declared_state.lock:
                 self._leased_node_indexes.discard(lease.node_index)
             return
         if not lease.session_scoped:
@@ -443,7 +480,8 @@ class RotatingProxyPool:
         if not self.enforce_unique_exit_ip or not lease.exit_ip:
             return
         owner = (lease.token, lease.session_id)
-        with self._lock:
+        lock = self._declared_state.lock if self._declared_state else self._lock
+        with lock:
             current_owner = self._active_exit_ips.get(lease.exit_ip)
             if current_owner is not None and current_owner != owner:
                 raise ProxyRotationError(
@@ -456,7 +494,8 @@ class RotatingProxyPool:
         if not self.enforce_unique_exit_ip or not updated.exit_ip:
             return
         owner = (updated.token, updated.session_id)
-        with self._lock:
+        lock = self._declared_state.lock if self._declared_state else self._lock
+        with lock:
             current_owner = self._active_exit_ips.get(updated.exit_ip)
             if current_owner is not None and current_owner != owner:
                 raise ProxyRotationError(
@@ -471,23 +510,23 @@ class RotatingProxyPool:
         if not self.enforce_unique_exit_ip or not lease.exit_ip:
             return
         owner = (lease.token, lease.session_id)
-        with self._lock:
+        lock = self._declared_state.lock if self._declared_state else self._lock
+        with lock:
             if self._active_exit_ips.get(lease.exit_ip) == owner:
                 del self._active_exit_ips[lease.exit_ip]
 
     def _acquire_declared_proxy(self):
         """Lease and rotate one server-declared residential node."""
-        with self._allocation_lock:
+        with self._declared_state.lock:
             self._ensure_control_nodes()
-            with self._lock:
-                start_index = self._next_index % len(self.entries)
-                self._next_index += 1
-                candidates = [
-                    self.entries[(start_index + offset) % len(self.entries)]
-                    for offset in range(len(self.entries))
-                    if self.entries[(start_index + offset) % len(self.entries)]["index"]
-                    not in self._leased_node_indexes
-                ]
+            start_index = self._declared_state.next_index % len(self.entries)
+            self._declared_state.next_index += 1
+            candidates = [
+                self.entries[(start_index + offset) % len(self.entries)]
+                for offset in range(len(self.entries))
+                if self.entries[(start_index + offset) % len(self.entries)]["index"]
+                not in self._leased_node_indexes
+            ]
 
             if not candidates:
                 raise ProxyRotationError(
@@ -497,15 +536,13 @@ class RotatingProxyPool:
             errors = []
             for node in candidates:
                 node_index = node["index"]
-                with self._lock:
-                    if node_index in self._leased_node_indexes:
-                        continue
-                    self._leased_node_indexes.add(node_index)
+                if node_index in self._leased_node_indexes:
+                    continue
+                self._leased_node_indexes.add(node_index)
                 try:
                     return self._rotate_and_verify_declared_node(node)
                 except ProxyRotationError as exc:
-                    with self._lock:
-                        self._leased_node_indexes.discard(node_index)
+                    self._leased_node_indexes.discard(node_index)
                     errors.append(f"节点 {node_index}: {exc}")
 
             raise ProxyRotationError(
@@ -551,6 +588,11 @@ class RotatingProxyPool:
                 "node_name": str(raw_node.get("node_name") or f"node-{node_index}"),
                 "proxy_url": raw_node.get("proxy_url"),
                 "endpoints": raw_node.get("endpoints") if isinstance(raw_node.get("endpoints"), list) else [],
+                "residential_endpoint": (
+                    raw_node.get("residential_endpoint")
+                    if isinstance(raw_node.get("residential_endpoint"), dict)
+                    else None
+                ),
                 "country_code": str(raw_node.get("country_code") or "").strip(),
                 "route_mode": str(raw_node.get("route_mode") or "residential"),
                 "hint": str(raw_node.get("hint") or "").strip(),
@@ -596,6 +638,11 @@ class RotatingProxyPool:
                 "node_name": str(payload.get("node_name") or node["node_name"]),
                 "proxy_url": payload.get("proxy_url"),
                 "endpoints": payload.get("endpoints") if isinstance(payload.get("endpoints"), list) else node.get("endpoints", []),
+                "residential_endpoint": (
+                    payload.get("residential_endpoint")
+                    if isinstance(payload.get("residential_endpoint"), dict)
+                    else None
+                ),
                 "country_code": str(payload.get("country_code") or "").strip(),
                 "route_mode": str(payload.get("route_mode") or "residential"),
                 "hint": str(payload.get("hint") or "").strip(),
@@ -605,6 +652,9 @@ class RotatingProxyPool:
                 identity = self._verify_exit_identity(
                     proxy,
                     expected_country=updated_node["country_code"],
+                    verify_listener_credentials=bool(
+                        str(updated_node.get("proxy_url") or "").strip()
+                    ) and not isinstance(updated_node.get("residential_endpoint"), dict),
                 )
                 lease = ProxyLease(
                     proxy=proxy,
@@ -620,9 +670,15 @@ class RotatingProxyPool:
                 )
                 self._reserve_exit_ip(lease)
             except ProxyRotationError as exc:
+                diagnostic = ""
+                managed_data_plane = False
                 if self._local_data_plane is not None:
+                    managed_data_plane = self._local_data_plane.is_active(node["index"])
+                    diagnostic = self._local_data_plane.failure_detail(node["index"])
                     self._local_data_plane.stop(node["index"])
                 last_error = str(exc)
+                if managed_data_plane and diagnostic:
+                    last_error = f"{last_error}；本机 Mihomo: {diagnostic}"
                 time.sleep(0.5 * (attempt + 1))
                 continue
             for position, current in enumerate(self.entries):
@@ -638,6 +694,15 @@ class RotatingProxyPool:
         raise ProxyRotationError(last_error or "住宅节点刷新失败")
 
     def _proxy_from_control_node(self, node):
+        residential_endpoint = node.get("residential_endpoint")
+        if isinstance(residential_endpoint, dict) and self._local_data_plane is not None:
+            try:
+                return self._local_data_plane.start(node["index"], {
+                    **residential_endpoint,
+                    "transport": "tcp",
+                })
+            except ManagedMihomoError as exc:
+                raise ProxyRotationError(str(exc)) from exc
         proxy = str(node.get("proxy_url") or "").strip()
         if proxy:
             try:
@@ -659,7 +724,7 @@ class RotatingProxyPool:
                 except ManagedMihomoError as exc:
                     raise ProxyRotationError(str(exc)) from exc
         raise ProxyRotationError(
-            "节点没有可用的数据端点；渠道必须发布 VLESS、VMess 或 Trojan WebSocket 端点"
+            "节点没有可用的数据端点；api-list 渠道应返回住宅端点，其他渠道必须发布 WebSocket 端点"
         )
 
     def _create_session(self, entry, country_code=""):
@@ -875,7 +940,6 @@ class RotatingProxyPool:
             for marker in (
                 "connection refused",
                 "failed to establish a new connection",
-                "max retries exceeded",
                 "newconnectionerror",
             )
         ):
@@ -976,7 +1040,13 @@ class RotatingProxyPool:
         except ValueError as exc:
             raise ProxyRotationError(f"出口 IP 接口返回异常: {exc}") from exc
 
-    def _verify_exit_identity(self, proxy, expected_country=""):
+    def _verify_exit_identity(
+        self,
+        proxy,
+        expected_country="",
+        *,
+        verify_listener_credentials=True,
+    ):
         """Verify the residential exit and derive a matching browser identity."""
         endpoint_label = self._proxy_label(proxy)
         try:
@@ -1020,7 +1090,8 @@ class RotatingProxyPool:
                 "country_code": country_code,
                 "timezone": timezone,
             })
-            self._verify_listener_credentials(proxy)
+            if verify_listener_credentials:
+                self._verify_listener_credentials(proxy)
             return {
                 "exit_ip": exit_ip,
                 "country_code": country_code,

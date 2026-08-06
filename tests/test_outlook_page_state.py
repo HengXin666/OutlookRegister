@@ -78,6 +78,29 @@ class OutlookPageStateTests(unittest.TestCase):
         self.assertEqual(state.name, "email_form")
         self.assertIn("input[type=\"email\"]", state.evidence)
 
+    def test_recovery_email_form_is_not_treated_as_account_login(self):
+        state = classify_outlook_page(
+            FakePage(
+                "https://login.live.com/proofs/add",
+                "Enter an alternate email address",
+                visible_selectors=("#proof-confirmation-email-input",),
+            )
+        )
+
+        self.assertEqual(state.name, "recovery_email_form")
+        self.assertIn("proof-confirmation-email-input", state.evidence)
+
+    def test_recovery_code_selector_is_classified_as_security_code(self):
+        state = classify_outlook_page(
+            FakePage(
+                "https://login.live.com/proofs/add",
+                visible_selectors=("#proof-confirmation-code-input",),
+            )
+        )
+
+        self.assertEqual(state.name, "sms_verify")
+        self.assertIn("proof-confirmation-code-input", state.evidence)
+
     def test_security_text_requires_manual_verification(self):
         state = classify_outlook_page(
             FakePage("https://login.live.com/login.srf", "Verify you are human")
@@ -85,6 +108,21 @@ class OutlookPageStateTests(unittest.TestCase):
 
         self.assertEqual(state.name, "verify_needed")
         self.assertTrue(is_manual_verification(state))
+
+    def test_locked_account_copy_is_classified_before_login_forms(self):
+        state = classify_outlook_page(
+            FakePage(
+                "https://account.live.com/identity/confirm",
+                "Your account has been locked\n"
+                "We detected activity that goes against the Microsoft Services Agreement "
+                "and have locked your account. You'll just need to show you're human in the next step.",
+                visible_selectors=('button[type="submit"]',),
+            )
+        )
+
+        self.assertEqual(state.name, "locked")
+        self.assertEqual(state.evidence, "text:account-locked")
+        self.assertFalse(is_manual_verification(state))
 
 
 if __name__ == "__main__":

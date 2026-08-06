@@ -538,14 +538,53 @@ class BaseBrowserController(ABC):
 
     def _recovery_code_input(self, page):
         return self._visible_first(page, (
+            '#proof-confirmation-code-input', '#otc-confirmation-input',
             'input[id^="codeEntry-"]', '#iOttText',
             'input[autocomplete="one-time-code"]',
             'input[name="otc"]', 'input[name="VerificationCode"]',
+            'input[name="ProofConfirmationCode"]',
             'input[name="ProofConfirmation"]', 'input[name="code"]',
             'input[inputmode="numeric"]', 'input[aria-label*="code" i]',
             'input[aria-label*="代码"]', 'input[placeholder*="code" i]',
             'input[placeholder*="代码"]',
         ))
+
+    def _recovery_email_input(self, page):
+        return self._visible_first(page, (
+            '#proof-confirmation-email-input',
+            'input[name="proofConfirmationEmail"]',
+            'input[name="ProofConfirmationEmail"]',
+            'input[data-testid="proof-confirmation-email-input"]',
+            'input[autocomplete="email"]',
+            'input[name="EmailAddress"]',
+            'input[name="proof"]',
+            'input[type="email"]',
+            'input[placeholder*="example.com" i]',
+        ))
+
+    def _fill_recovery_email(self, page, recovery_email, email_input=None):
+        email_input = email_input or self._recovery_email_input(page)
+        if email_input is None:
+            return False
+        try:
+            email_input.fill(recovery_email, timeout=8000)
+        except Exception:
+            try:
+                email_input.fill(recovery_email)
+            except Exception:
+                pass
+        try:
+            value = str(email_input.input_value(timeout=1000) or '').strip()
+        except Exception:
+            value = ''
+        if value.casefold() != str(recovery_email).strip().casefold():
+            try:
+                self.smooth_click(page, email_input)
+                page.keyboard.press('Control+A')
+                page.keyboard.type(recovery_email, delay=40)
+            except Exception:
+                return False
+        return True
 
     def _wait_for_recovery_page(self, page, timeout_seconds=5):
         deadline = time.time() + timeout_seconds
@@ -585,11 +624,21 @@ class BaseBrowserController(ABC):
                 return False, f'Microsoft 提示安全代码错误（{error}）'
 
             code_input = self._recovery_code_input(page)
+            email_input = self._recovery_email_input(page)
             try:
-                still_on_proof = '/proofs/add' in (page.url or '').lower()
+                current_url = (page.url or '').casefold()
             except Exception:
-                still_on_proof = True
-            if code_input is not None or still_on_proof:
+                current_url = ''
+            success_surface = (
+                '/mail/' in current_url
+                or self._visible_first(page, (
+                    '[aria-label="新邮件"]',
+                    '[aria-label="New mail"]',
+                    '[aria-label="New message"]',
+                )) is not None
+            )
+            still_on_proof = '/proofs/' in current_url and not success_surface
+            if code_input is not None or email_input is not None or still_on_proof:
                 departed_since = None
             else:
                 # Require a stable departure so a transient re-render is not treated as success.
@@ -817,15 +866,10 @@ class BaseBrowserController(ABC):
                     f'[Recovery Code] 无法建立发送前消息基线，将拒绝无时间戳的旧验证码: {exc}',
                     flush=True,
                 )
-        email_input = self._visible_first(page, (
-            '#proof-confirmation-email-input',
-            'input[name="proofConfirmationEmail"]',
-            'input[data-testid="proof-confirmation-email-input"]',
-            'input[type="email"]', 'input[name="EmailAddress"]',
-            'input[name="proof"]', 'input[placeholder*="example.com" i]',
-        ))
+        email_input = self._recovery_email_input(page)
         if email_input is not None:
-            email_input.fill(recovery_email)
+            if not self._fill_recovery_email(page, recovery_email, email_input):
+                raise HXEmailError('无法填写 Microsoft 密保邮箱输入框')
             submit = self._visible_first(page, (
                 '[data-testid="primaryButton"]', '#idSIButton9', '#iNext',
                 'button[type="submit"]', 'input[type="submit"]',

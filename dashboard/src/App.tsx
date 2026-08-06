@@ -11,7 +11,6 @@ import {
   ExternalLink,
   Gauge,
   HardDriveDownload,
-  KeyRound,
   ListFilter,
   LoaderCircle,
   Mail,
@@ -21,6 +20,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  ScrollText,
   SlidersHorizontal,
   TimerReset,
   Wifi,
@@ -41,9 +41,13 @@ type AccountActionName = "authorize" | "import_hx_email" | "keepalive"
 type AccountActionState = {
   email: string
   action: AccountActionName
-  status: "queued" | "running" | "succeeded" | "failed" | "manual_verification_required"
+  status: "queued" | "running" | "pausing" | "paused" | "succeeded" | "failed" | "manual_verification_required"
+  step?: string
   message: string
   updated_at: string
+  logs?: Array<{ timestamp: string; level: "info" | "warning" | "error"; message: string }>
+  page_record?: { url: string; title: string; body_text: string; html: string; frames: string[]; captured_at: string }
+  steps?: Record<string, "pending" | "running" | "completed" | "paused" | "failed">
 }
 type AccountActionMap = Record<string, Partial<Record<AccountActionName, AccountActionState>>>
 type Account = {
@@ -197,22 +201,164 @@ function TrafficBars({ metrics, emptyLabel }: { metrics: TrafficMetric[]; emptyL
   )
 }
 
-function ActionStateRow({ state, onResume }: { state: AccountActionState; onResume?: () => void }) {
-  const running = state.status === "queued" || state.status === "running"
+const keepaliveSteps = [
+  ["login", "登录"],
+  ["email_login", "邮箱登录"],
+  ["email_code", "获取邮箱验证码并提交完成登录"],
+  ["manual_challenge", "账号停止登录，等待人工按压测试"],
+  ["oauth", "获取授权"],
+  ["hx_email", "加入 HX-Email"],
+] as const
+
+const keepaliveStepAliases: Record<string, string> = {
+  queued: "login",
+  starting: "login",
+  preparing: "login",
+  proxy: "login",
+  browser: "login",
+  login_email: "email_login",
+  login_password: "email_login",
+  login_options: "email_login",
+  login_complete: "email_login",
+  recovery_email: "email_code",
+  recovery_code: "email_code",
+  sms_verify: "email_code",
+  unlock: "manual_challenge",
+  unlock_loading: "manual_challenge",
+  unlock_verification: "manual_challenge",
+  verification: "manual_challenge",
+  oauth_check: "oauth",
+  oauth_authorize: "oauth",
+  finishing: "hx_email",
+  complete: "hx_email",
+}
+
+function keepaliveStepId(step?: string) {
+  return step ? keepaliveStepAliases[step] || step : ""
+}
+
+function actionTone(status: AccountActionState["status"]) {
+  if (status === "succeeded") return "success" as const
+  if (status === "failed") return "danger" as const
+  if (status === "manual_verification_required" || status === "pausing" || status === "paused") return "warning" as const
+  return status === "running" ? "teal" as const : "neutral" as const
+}
+
+function actionLabel(status: AccountActionState["status"]) {
+  if (status === "succeeded") return "完成"
+  if (status === "failed") return "失败"
+  if (status === "manual_verification_required") return "等待人工处理"
+  if (status === "pausing") return "暂停中"
+  if (status === "paused") return "已暂停"
+  return status === "running" ? "执行中" : "排队"
+}
+
+function KeepaliveStepPanel({
+  state,
+  onStart,
+  onPause,
+  onResume,
+  controllingStep,
+}: {
+  state?: AccountActionState
+  onStart: () => void
+  onPause: (step: string) => void
+  onResume: (step: string) => void
+  controllingStep?: string | null
+}) {
+  const waiting = state?.status === "paused" || state?.status === "pausing" || state?.status === "manual_verification_required"
+  const running = state?.status === "running" || state?.status === "queued"
+  const active = waiting || running
+  return (
+    <section className="mt-5 border-t border-slate-200 pt-5" aria-label="保活步骤面板">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-900">保活流程</h3>
+          <p className="mt-1 text-xs text-slate-500">点击步骤执行或从该步骤继续</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge tone={state ? actionTone(state.status) : "neutral"}>{state ? actionLabel(state.status) : "未开始"}</Badge>
+          <Button variant="primary" className="h-8 px-2.5" onClick={onStart} disabled={active} title="按顺序执行六个保活步骤"><Play className="h-3.5 w-3.5" />开始执行</Button>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {keepaliveSteps.map(([step, label], index) => {
+          const currentStep = keepaliveStepId(state?.step)
+          const currentIndex = keepaliveSteps.findIndex(([item]) => item === currentStep)
+          const current = currentStep === step
+          const stepStatus = state?.steps?.[step] || "pending"
+          const completed = stepStatus === "completed"
+          const canChoose = Boolean(state && waiting && currentIndex >= index)
+          const pauseEnabled = Boolean(state && running && current)
+          const resumeEnabled = canChoose
+          return (
+            <div key={step} className={cn("flex items-center gap-2 rounded-md border px-2 py-2 transition-colors", current ? "border-teal-300 bg-teal-50/60" : completed ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200 bg-white hover:border-teal-200")}>
+              <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold", current ? "border-teal-600 bg-teal-700 text-white" : completed ? "border-emerald-500 bg-emerald-500 text-white" : "border-slate-200 bg-slate-50 text-slate-500")}>{completed ? "✓" : index + 1}</span>
+              <button
+                type="button"
+                className="min-w-0 flex-1 cursor-pointer rounded px-2 py-1 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => onResume(step)}
+                disabled={!canChoose || controllingStep != null}
+                title={`从第 ${index + 1} 步继续`}
+              >
+                {label}
+              </button>
+              <span className="w-4 shrink-0 text-center text-xs font-bold text-teal-700">{current && state?.status === "succeeded" ? "✓" : current && waiting ? "!" : ""}</span>
+              <Button variant="ghost" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => onPause(step)} disabled={!pauseEnabled || controllingStep != null} title={`暂停第 ${index + 1} 步`}><PauseCircle className="h-3 w-3" />暂停</Button>
+              <Button variant="ghost" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => onResume(step)} disabled={!resumeEnabled || controllingStep != null} title={`继续第 ${index + 1} 步`}><Play className="h-3 w-3" />继续</Button>
+            </div>
+          )
+        })}
+      </div>
+      <div className="mt-4 rounded-md border border-slate-200 bg-slate-50/70 p-3" aria-label="保活日志" aria-live="polite">
+        <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600"><ScrollText className="h-3.5 w-3.5" />日志</div>
+        {!state && <p className="text-xs text-slate-400">任务开始后，当前步骤和告警会显示在这里。</p>}
+        {state && (state.logs || []).length === 0 && <p className="text-xs text-slate-400">暂无日志</p>}
+        <div className="max-h-72 overflow-y-auto">
+          {state?.logs?.slice().reverse().map((entry, index) => <div key={`${entry.timestamp}-${index}`} className={cn("border-b border-slate-200/70 py-2 text-xs leading-5 last:border-0", entry.level === "error" ? "text-red-700" : entry.level === "warning" ? "text-amber-700" : "text-slate-600")}><time className="block tabular-nums text-slate-400">{formatDate(entry.timestamp)}</time><p className="mt-0.5 break-words">{entry.message}</p></div>)}
+        </div>
+        {state?.page_record && <details className="mt-3 border-t border-slate-200 pt-2"><summary className="cursor-pointer text-xs font-medium text-slate-600">人工页面记录</summary><div className="mt-2 space-y-2 font-mono text-[11px] leading-4 text-slate-600"><div className="break-all">URL: {state.page_record.url || "未知"}</div><div>标题: {state.page_record.title || "未知"}</div><pre className="max-h-40 overflow-auto whitespace-pre-wrap">{state.page_record.body_text}</pre><pre className="max-h-40 overflow-auto whitespace-pre-wrap">{state.page_record.html}</pre></div></details>}
+      </div>
+    </section>
+  )
+}
+
+function ActionStateRow({ state, onPause, onResume, controllingStep }: { state: AccountActionState; onPause?: (step: string) => void; onResume?: (step: string) => void; controllingStep?: string | null }) {
+  const running = state.status === "queued" || state.status === "running" || state.status === "pausing"
   const failed = state.status === "failed"
-  const waitingForOperator = state.status === "manual_verification_required"
+  const waitingForOperator = state.status === "manual_verification_required" || state.status === "paused" || state.status === "pausing"
   return (
     <div
       className={cn(
-        "flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs",
+        "flex flex-wrap items-start gap-2 rounded-md border px-3 py-2.5 text-xs",
         failed ? "border-red-200 bg-red-50 text-red-700" : state.status === "succeeded" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : waitingForOperator ? "border-amber-200 bg-amber-50 text-amber-800" : "border-sky-200 bg-sky-50 text-sky-700",
       )}
       role="status"
     >
       {running ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" /> : failed ? <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : waitingForOperator ? <PauseCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
       <span className="min-w-0 flex-1 break-words leading-5">{state.message}</span>
-      {waitingForOperator && onResume && <Button variant="ghost" className="h-7 shrink-0 px-2 text-[11px]" onClick={onResume} title="人工验证完成后继续"><Play className="h-3 w-3" />继续</Button>}
       <span className="shrink-0 text-[11px] opacity-70">{formatDate(state.updated_at)}</span>
+      {state.action === "keepalive" && <div className="mt-3 w-full space-y-2 border-t border-current/10 pt-3" aria-label="保活步骤">
+        {keepaliveSteps.map(([step, label]) => {
+          const currentStep = keepaliveStepId(state.step)
+          const currentIndex = keepaliveSteps.findIndex(([item]) => item === currentStep)
+          const stepIndex = keepaliveSteps.findIndex(([item]) => item === step)
+          const current = currentStep === step
+          const pauseEnabled = current && (state.status === "running" || state.status === "queued")
+          const waiting = state.status === "pausing" || state.status === "paused" || state.status === "manual_verification_required"
+          const resumeEnabled = waiting && currentIndex >= stepIndex
+          const selectable = waiting && currentIndex >= stepIndex
+          return <div key={step} className={cn("flex items-center gap-2 rounded border px-2 py-1.5", current ? "border-current/30 bg-white/50" : "border-transparent", !selectable && !current && "opacity-60")}>
+            <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold", current ? "border-current bg-white" : "border-slate-200 bg-slate-50 text-slate-400")}>{stepIndex + 1}</span>
+            <button type="button" className={cn("min-w-0 flex-1 cursor-pointer break-words rounded px-2 py-1 text-left text-xs font-medium transition-colors hover:bg-white", current ? "text-slate-900" : "text-slate-600")} onClick={() => onResume?.(step)} disabled={!selectable || controllingStep != null} title={`从步骤${stepIndex + 1}开始`}>{label}</button>
+            <span className="w-5 shrink-0 text-center text-xs font-bold">{state.status === "succeeded" && current ? "✓" : current && waitingForOperator ? "!" : ""}</span>
+            {onPause && <Button variant="ghost" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => onPause(step)} disabled={!pauseEnabled || controllingStep != null} title={`暂停${label}`}><PauseCircle className="h-3 w-3" />暂停</Button>}
+            {onResume && <Button variant="ghost" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => onResume(step)} disabled={!resumeEnabled || controllingStep != null} title={`继续${label}`}><Play className="h-3 w-3" />继续</Button>}
+          </div>
+        })}
+      </div>}
+      {state.page_record && <details className="mt-3 w-full border-t border-current/10 pt-3"><summary className="cursor-pointer font-medium">人工页面记录</summary><div className="mt-2 space-y-1 break-words font-mono text-[11px] leading-4"><div>URL: {state.page_record.url || "未知"}</div><div>标题: {state.page_record.title || "未知"}</div><div>Frames: {state.page_record.frames.join(", ") || "无"}</div><div className="mt-2 font-sans font-medium">页面正文</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{state.page_record.body_text}</pre><div className="mt-2 font-sans font-medium">页面 HTML</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{state.page_record.html}</pre></div></details>}
+      {state.logs && <div className="mt-3 w-full border-t border-current/10 pt-3"><div className="mb-1 font-medium">日志</div>{state.logs.slice(-20).reverse().map((entry, index) => <div key={`${entry.timestamp}-${index}`} className="break-words leading-5"><span className="mr-2 opacity-60">{formatDate(entry.timestamp)}</span>{entry.message}</div>)}</div>}
     </div>
   )
 }
@@ -221,19 +367,19 @@ function AccountDetail({
   account,
   actions,
   onAction,
+  onPause,
   onResume,
+  controllingStep,
   onClose,
 }: {
   account: Account
   actions: Partial<Record<AccountActionName, AccountActionState>>
-  onAction: (account: Account, action: AccountActionName) => void
-  onResume: (account: Account, action: AccountActionName) => void
+  onAction: (account: Account, action: AccountActionName, step?: string) => void
+  onPause: (account: Account, action: AccountActionName, step?: string) => void
+  onResume: (account: Account, action: AccountActionName, step?: string) => void
+  controllingStep?: string | null
   onClose: () => void
 }) {
-  const activeAction = Object.values(actions).find((state) => state && (state.status === "queued" || state.status === "running" || state.status === "manual_verification_required"))
-  const canAuthorize = account.stages.registered.ok && !activeAction
-  const canImport = account.stages.oauth_authorized.ok && !activeAction
-  const canKeepalive = account.stages.registered.ok && !activeAction
   const recoveryTone = account.recovery.bound ? "success" : account.recovery.email ? "warning" : "neutral"
   const recoveryStatus = account.recovery.bound ? "已确认绑定" : account.recovery.email ? "已选择，未确认" : "未记录"
   return (
@@ -320,45 +466,13 @@ function AccountDetail({
               )}
             </section>
 
-          <section className="mt-7">
-            <h3 className="mb-3 text-sm font-semibold text-slate-900">补充操作</h3>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <Button
-                variant={account.stages.oauth_authorized.ok ? "secondary" : "primary"}
-                className="w-full"
-                disabled={!canAuthorize}
-                onClick={() => onAction(account, "authorize")}
-                title={account.stages.registered.ok ? "执行 OAuth 授权" : "账号注册完成后才可授权"}
-              >
-                {activeAction?.action === "authorize" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
-                {account.stages.oauth_authorized.ok ? "重新授权" : "补充授权"}
-              </Button>
-              <Button
-                className="w-full"
-                disabled={!canImport}
-                onClick={() => onAction(account, "import_hx_email")}
-                title={account.stages.oauth_authorized.ok ? "导入 HX-Email" : "OAuth 授权完成后才可导入"}
-              >
-                {activeAction?.action === "import_hx_email" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
-                {account.stages.hx_email_imported.ok ? "重新加入 HX-Email" : "加入 HX-Email"}
-              </Button>
-              <Button
-                variant="secondary"
-                className="w-full"
-                disabled={!canKeepalive}
-                onClick={() => onAction(account, "keepalive")}
-                title="使用账号面板执行保活登录"
-              >
-                {activeAction?.action === "keepalive" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                保活登录
-              </Button>
-            </div>
-            {Object.values(actions).length > 0 && (
-              <div className="mt-3 space-y-2">
-                {Object.values(actions).filter((state): state is AccountActionState => Boolean(state)).map((state) => <ActionStateRow key={state.action} state={state} onResume={() => onResume(account, state.action)} />)}
-              </div>
-            )}
-          </section>
+          <KeepaliveStepPanel
+            state={actions.keepalive}
+            onStart={() => onAction(account, "keepalive")}
+            onPause={(step) => onPause(account, "keepalive", step)}
+            onResume={(step) => onResume(account, "keepalive", step)}
+            controllingStep={controllingStep}
+          />
 
           <section className="mt-7">
             <div className="mb-3 flex items-center justify-between">
@@ -432,6 +546,7 @@ function App() {
   const [filter, setFilter] = useState<FilterKey>("all")
   const [selected, setSelected] = useState<Account | null>(null)
   const [accountActions, setAccountActions] = useState<AccountActionMap>({})
+  const [controllingStep, setControllingStep] = useState<string | null>(null)
   const [activeView, setActiveView] = useState<"dashboard" | "workflows" | "config">("dashboard")
 
   const refresh = useCallback(async () => {
@@ -465,6 +580,40 @@ function App() {
     return () => window.clearInterval(timer)
   }, [autoRefresh, refresh])
 
+  useEffect(() => {
+    const stream = new EventSource("/api/account-actions/stream")
+    const applyEvent = (event: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          email?: string
+          action?: string
+          state?: AccountActionState
+        }
+        if (!payload.email || !payload.action || !payload.state) return
+        const key = payload.email.toLowerCase()
+        setAccountActions((current) => ({
+          ...current,
+          [key]: { ...current[key], [payload.action!]: payload.state! },
+        }))
+      } catch {
+        // The polling refresh remains the fallback if a malformed event arrives.
+      }
+    }
+    const applySnapshot = (event: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(event.data) as { accounts?: AccountActionMap }
+        if (payload.accounts) setAccountActions(payload.accounts)
+      } catch {
+        // The polling refresh remains the fallback if a malformed event arrives.
+      }
+    }
+    stream.addEventListener("account-action", applyEvent as EventListener)
+    stream.addEventListener("account-snapshot", applySnapshot as EventListener)
+    return () => {
+      stream.close()
+    }
+  }, [])
+
   const runAccountAction = useCallback(async (account: Account, action: AccountActionName) => {
     const key = account.email.toLowerCase()
     const optimistic: AccountActionState = {
@@ -481,6 +630,7 @@ function App() {
     try {
       const response = await fetch(`/api/accounts/${encodeURIComponent(account.email)}/actions/${action.replace(/_/g, "-")}`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
       })
       const payload = (await response.json()) as { action?: AccountActionState; detail?: string }
       if (!response.ok || !payload.action) throw new Error(payload.detail || `HTTP ${response.status}`)
@@ -504,14 +654,33 @@ function App() {
     }
   }, [])
 
-  const resumeAccountAction = useCallback(async (account: Account, action: AccountActionName) => {
+  const resumeAccountAction = useCallback(async (account: Account, action: AccountActionName, step?: string) => {
+    const controlKey = `${account.email.toLowerCase()}-${action}-resume-${step || "current"}`
+    setControllingStep(controlKey)
     try {
-      const response = await fetch(`/api/accounts/${encodeURIComponent(account.email)}/actions/${action.replace(/_/g, "-")}/resume`, { method: "POST" })
+      const response = await fetch(`/api/accounts/${encodeURIComponent(account.email)}/actions/${action.replace(/_/g, "-")}/resume`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ step }) })
       const payload = (await response.json()) as { action?: AccountActionState; detail?: string }
       if (!response.ok || !payload.action) throw new Error(payload.detail || `HTTP ${response.status}`)
       setAccountActions((current) => ({ ...current, [account.email.toLowerCase()]: { ...current[account.email.toLowerCase()], [action]: payload.action! } }))
     } catch (err) {
       setError(err instanceof Error ? err.message : "继续操作失败")
+    } finally {
+      setControllingStep(null)
+    }
+  }, [])
+
+  const pauseAccountAction = useCallback(async (account: Account, action: AccountActionName, step?: string) => {
+    const controlKey = `${account.email.toLowerCase()}-${action}-pause-${step || "current"}`
+    setControllingStep(controlKey)
+    try {
+      const response = await fetch(`/api/accounts/${encodeURIComponent(account.email)}/actions/${action.replace(/_/g, "-")}/pause`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ step }) })
+      const payload = (await response.json()) as { action?: AccountActionState; detail?: string }
+      if (!response.ok || !payload.action) throw new Error(payload.detail || `HTTP ${response.status}`)
+      setAccountActions((current) => ({ ...current, [account.email.toLowerCase()]: { ...current[account.email.toLowerCase()], [action]: payload.action! } }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "暂停操作失败")
+    } finally {
+      setControllingStep(null)
     }
   }, [])
 
@@ -664,7 +833,9 @@ function App() {
           account={selected}
           actions={accountActions[selected.email.toLowerCase()] || {}}
           onAction={(account, action) => void runAccountAction(account, action)}
-          onResume={(account, action) => void resumeAccountAction(account, action)}
+          onPause={(account, action, step) => void pauseAccountAction(account, action, step)}
+          onResume={(account, action, step) => void resumeAccountAction(account, action, step)}
+          controllingStep={controllingStep}
           onClose={() => setSelected(null)}
         />
       )}

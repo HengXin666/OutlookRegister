@@ -52,6 +52,7 @@ class RecoveryEmailFlowTests(unittest.TestCase):
         controller = make_controller(attempts=1)
         page = MagicMock()
         email_input = MagicMock()
+        email_input.input_value.return_value = "backup@example.test"
         code_input = MagicMock()
         submit = MagicMock()
         controller.hx_email.apply_mailbox.return_value = {
@@ -83,6 +84,10 @@ class RecoveryEmailFlowTests(unittest.TestCase):
         self.assertEqual(
             controller.thread_local.recovery_result["reason"],
             "verification_failed",
+        )
+        email_input.fill.assert_called_once_with(
+            "backup@example.test",
+            timeout=8000,
         )
         controller.hx_email.finish_mailbox.assert_called_once_with(
             {

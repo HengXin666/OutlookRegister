@@ -111,6 +111,12 @@ def classify_outlook_page(page: Any) -> OutlookPageState:
         (
             'input[name="otc"]',
             "#otc",
+            "#proof-confirmation-code-input",
+            "#otc-confirmation-input",
+            "#iOttText",
+            'input[name="ProofConfirmationCode"]',
+            'input[name="VerificationCode"]',
+            'input[name="ProofConfirmation"]',
             'input[autocomplete="one-time-code"]',
             'input[id^="codeEntry-"]',
             'input[inputmode="numeric"]',
@@ -118,6 +124,52 @@ def classify_outlook_page(page: Any) -> OutlookPageState:
     )
     if code_selector:
         return OutlookPageState("sms_verify", f"dom:{code_selector}", path)
+
+    recovery_email_markers = (
+        "recovery email",
+        "alternate email",
+        "enter an email address",
+        "enter your recovery email",
+        "enter an alternate email",
+        "add an email address",
+        "protect your account",
+        "security info",
+        "辅助邮箱",
+        "恢复邮箱",
+        "备用邮箱",
+        "添加电子邮件",
+        "復原電子郵件",
+        "備用電子郵件",
+        "回復用メール",
+        "복구 이메일",
+        "让我们来保护你的帐户",
+        "保护你的帐户",
+        "協助我們保護您的帳戶",
+    )
+    recovery_surface = "/proofs/" in lowered_url or any(
+        marker in body for marker in recovery_email_markers
+    )
+    if recovery_surface:
+        recovery_email_selector = _first_visible(
+            page,
+            (
+                "#proof-confirmation-email-input",
+                'input[name="proofConfirmationEmail"]',
+                'input[name="ProofConfirmationEmail"]',
+                'input[data-testid="proof-confirmation-email-input"]',
+                'input[autocomplete="email"]',
+                'input[type="email"]',
+            ),
+        )
+        if recovery_email_selector:
+            return OutlookPageState(
+                "recovery_email_form",
+                f"dom:{recovery_email_selector}",
+                path,
+            )
+        if any(marker in body for marker in recovery_email_markers):
+            return OutlookPageState("recovery_email_form", "text:recovery-email", path)
+
     if any(
         marker in body
         for marker in (

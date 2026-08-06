@@ -133,12 +133,22 @@ export function ConfigPanel() {
     setError(null)
     setNotice(null)
     try {
-      const response = await fetch("/api/proxy-rotation/check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ control_url: controlUrl }),
-      })
-      const result = (await response.json()) as ProxyCheckResponse
+      let response: Response
+      try {
+        response = await fetch("/api/proxy-rotation/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ control_url: controlUrl }),
+        })
+      } catch {
+        throw new Error("本地仪表盘后端连接中断，请确认服务仍在运行后重试")
+      }
+      let result: ProxyCheckResponse
+      try {
+        result = (await response.json()) as ProxyCheckResponse
+      } catch {
+        throw new Error(`本地仪表盘后端返回了无效响应（HTTP ${response.status}）`)
+      }
       if (!response.ok || !result.config) {
         throw new Error(result.detail || `住宅代理校验失败（HTTP ${response.status}）`)
       }
