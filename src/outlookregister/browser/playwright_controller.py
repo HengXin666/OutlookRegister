@@ -1,8 +1,9 @@
-import json
-from pathlib import Path
+
 from playwright.sync_api import sync_playwright
-from src.outlookregister import PROJECT_ROOT
-from src.outlookregister.config.config_store import ConfigStore
+
+from outlookregister import PROJECT_ROOT
+from outlookregister.config.config_store import ConfigStore
+
 from .base_controller import BaseBrowserController, build_browser_proxy_settings
 
 

@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-import ipaddress
 import json
-import time
-import threading
-import uuid
 from dataclasses import replace
-from urllib.parse import quote, urlsplit, urlunsplit
 
-import requests
-
-from src.outlookregister.proxy.managed_mihomo import ManagedMihomo, ManagedMihomoError, SUPPORTED_PROTOCOLS
-from src.outlookregister.proxy.proxy_pool_types import ProxyLease, ProxyRotationError
+from outlookregister.proxy.proxy_pool_types import ProxyLease, ProxyRotationError
 
 
 class _ProxyPoolCore:

@@ -2,8 +2,8 @@ import threading
 import unittest
 from unittest.mock import mock_open, patch
 
-from main import process_single_flow
-from proxy_rotation import ProxyLease
+from outlookregister.core.main import process_single_flow
+from outlookregister.proxy.proxy_rotation import ProxyLease
 
 
 class FakeController:
@@ -112,10 +112,10 @@ class MainFlowIsolationTests(unittest.TestCase):
         controller = FakeController(events)
         proxy_pool = FakeProxyPool(events)
 
-        with patch("src.outlookregister.core.flow_processor.random_email", return_value="flow-user"), patch(
-            "src.outlookregister.core.flow_processor.generate_strong_password", return_value="password"
+        with patch("outlookregister.core.flow_processor.random_email", return_value="flow-user"), patch(
+            "outlookregister.core.flow_processor.generate_strong_password", return_value="password"
         ), patch(
-            "src.outlookregister.core.flow_processor.get_access_token",
+            "outlookregister.core.flow_processor.get_access_token",
             return_value=(False, False, False),
         ) as get_access_token:
             result = process_single_flow(controller, proxy_pool)
@@ -148,10 +148,10 @@ class MainFlowIsolationTests(unittest.TestCase):
         controller = FakeController(events)
         proxy_pool = FakeProxyPool(events)
 
-        with patch("src.outlookregister.core.flow_processor.random_email", return_value="flow-user"), patch(
-            "src.outlookregister.core.flow_processor.generate_strong_password", return_value="password"
+        with patch("outlookregister.core.flow_processor.random_email", return_value="flow-user"), patch(
+            "outlookregister.core.flow_processor.generate_strong_password", return_value="password"
         ), patch(
-            "src.outlookregister.core.flow_processor.get_access_token",
+            "outlookregister.core.flow_processor.get_access_token",
             return_value=("refresh", "access", 123),
         ), patch("builtins.open", mock_open()):
             result = process_single_flow(controller, proxy_pool)
@@ -183,12 +183,12 @@ class MainFlowIsolationTests(unittest.TestCase):
         }
         proxy_pool = FakeProxyPool(events)
 
-        with patch("src.outlookregister.core.flow_processor.select_identity_profile") as select_profile, patch(
-            "src.outlookregister.core.flow_processor.random_email", return_value="flow-user"
+        with patch("outlookregister.core.flow_processor.select_identity_profile") as select_profile, patch(
+            "outlookregister.core.flow_processor.random_email", return_value="flow-user"
         ), patch(
-            "src.outlookregister.core.flow_processor.generate_strong_password", return_value="password"
+            "outlookregister.core.flow_processor.generate_strong_password", return_value="password"
         ), patch(
-            "src.outlookregister.core.flow_processor.get_access_token", return_value=(False, False, False)
+            "outlookregister.core.flow_processor.get_access_token", return_value=(False, False, False)
         ):
             select_profile.return_value = {
                 "country_code": "GB",

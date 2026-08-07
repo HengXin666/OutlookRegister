@@ -14,12 +14,11 @@ import time
 # NOTE: ``stage_for_hx_email_path`` is imported by the transport mixin. It is
 # kept importable here too for backwards-compatible callers and tests that may
 # reference ``hx_email_client.stage_for_hx_email_path``.
-from src.outlookregister.dashboard.traffic_tracker import stage_for_hx_email_path
-from src.outlookregister.email.hx_email_base import HXEmailError, _HXEmailBase
-from src.outlookregister.email.hx_email_code import _HXEmailCode
-from src.outlookregister.email.hx_email_import import _HXEmailImport
-from src.outlookregister.email.hx_email_mailbox import _HXEmailMailbox
-from src.outlookregister.email.hx_email_transport import _HXEmailTransport
+from outlookregister.email.hx_email_base import HXEmailError, _HXEmailBase
+from outlookregister.email.hx_email_code import _HXEmailCode
+from outlookregister.email.hx_email_import import _HXEmailImport
+from outlookregister.email.hx_email_mailbox import _HXEmailMailbox
+from outlookregister.email.hx_email_transport import _HXEmailTransport
 
 
 class HXEmailClient(_HXEmailTransport, _HXEmailImport, _HXEmailMailbox, _HXEmailCode, _HXEmailBase):

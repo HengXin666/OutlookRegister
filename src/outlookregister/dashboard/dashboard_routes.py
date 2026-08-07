@@ -1,8 +1,8 @@
 """HTTP 路由处理器（注册到 dashboard_app.app）。"""
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 from queue import Empty
 from typing import Any
 
@@ -10,15 +10,23 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.outlookregister import PROJECT_ROOT
-from src.outlookregister.config.config_store import ConfigError
-from src.outlookregister.proxy.proxy_rotation import ProxyRotationError, RotatingProxyPool
-from src.outlookregister.dashboard.dashboard_actions import DashboardActionError
-from src.outlookregister.dashboard.workflow_runner import WorkflowError
-from src.outlookregister.dashboard.dashboard_app import app, ACTION_RUNNER, WORKFLOW_RUNNER, CONFIG_STORE
-from src.outlookregister.dashboard.dashboard_constants import RESULTS_DIR
-from src.outlookregister.dashboard.dashboard_serializers import _automatic_proxy_config, _interactive_proxy_config
-from src.outlookregister.dashboard.dashboard_store import DashboardStore
+from outlookregister import PROJECT_ROOT
+from outlookregister.config.config_store import ConfigError
+from outlookregister.dashboard.dashboard_actions import DashboardActionError
+from outlookregister.dashboard.dashboard_app import (
+    ACTION_RUNNER,
+    CONFIG_STORE,
+    WORKFLOW_RUNNER,
+    app,
+)
+from outlookregister.dashboard.dashboard_constants import RESULTS_DIR
+from outlookregister.dashboard.dashboard_serializers import (
+    _automatic_proxy_config,
+    _interactive_proxy_config,
+)
+from outlookregister.dashboard.dashboard_store import DashboardStore
+from outlookregister.dashboard.workflow_runner import WorkflowError
+from outlookregister.proxy.proxy_rotation import ProxyRotationError, RotatingProxyPool
 
 
 @app.get("/api/dashboard")

@@ -1,24 +1,46 @@
 """Dashboard 聚合快照构建。"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from statistics import mean
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from src.outlookregister.dashboard.dashboard_constants import (  # noqa: F401
-    STAGE_DEFINITIONS, STAGE_LABELS, TRAFFIC_STAGE_LABELS, REGISTERED_EVIDENCE, FAILURE_STAGES,
-    CHECKPOINTS_FILE, RECOVERY_FILE, TRAFFIC_FILE, RESULTS_DIR, DEFAULT_RESULTS_DIR,
+from outlookregister.dashboard.dashboard_constants import (  # noqa: F401
+    CHECKPOINTS_FILE,
+    DEFAULT_RESULTS_DIR,
+    FAILURE_STAGES,
+    RECOVERY_FILE,
+    REGISTERED_EVIDENCE,
+    RESULTS_DIR,
+    STAGE_DEFINITIONS,
+    STAGE_LABELS,
+    TRAFFIC_FILE,
+    TRAFFIC_STAGE_LABELS,
 )
-from src.outlookregister.dashboard.dashboard_serializers import (  # noqa: F401
-    _parse_timestamp, _timestamp_value, _read_jsonl, _email_from, _email_key,
-    _number, _round_seconds, _human_bytes, _traffic_stage_label, _sanitize_detail,
+from outlookregister.dashboard.dashboard_record_helpers import (  # noqa: F401
+    _account_record,
+    _add_account,
+    _averages,
+    _build_traffic,
+    _duration_label,
+    _event_time,
+    _milestone_durations,
+    _remember_identity_country,
+    _time_delta,
 )
-from src.outlookregister.dashboard.dashboard_record_helpers import (  # noqa: F401
-    _account_record, _add_account, _remember_identity_country,
-    _event_time, _time_delta, _milestone_durations, _build_traffic,
-    _duration_label, _averages,
+from outlookregister.dashboard.dashboard_serializers import (  # noqa: F401
+    _email_from,
+    _email_key,
+    _human_bytes,
+    _number,
+    _parse_timestamp,
+    _read_jsonl,
+    _round_seconds,
+    _sanitize_detail,
+    _timestamp_value,
+    _traffic_stage_label,
 )
+
 
 class DashboardStore:
     def __init__(self, results_dir: Path | str = RESULTS_DIR):
@@ -95,7 +117,7 @@ class DashboardStore:
             if account.get("last_seen")
         ]
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "source": {
                 "results_dir": str(self.results_dir),
                 "checkpoints": CHECKPOINTS_FILE,
@@ -146,11 +168,11 @@ class DashboardStore:
     def _finalize_account(self, account: dict[str, Any]) -> dict[str, Any]:
         events = sorted(
             account["events"],
-            key=lambda item: (item["_timestamp"] is None, item["_timestamp"] or datetime.min.replace(tzinfo=timezone.utc), item["index"]),
+            key=lambda item: (item["_timestamp"] is None, item["_timestamp"] or datetime.min.replace(tzinfo=UTC), item["index"]),
         )
         recovery_events = sorted(
             account["recovery_events"],
-            key=lambda item: (item["_timestamp"] is None, item["_timestamp"] or datetime.min.replace(tzinfo=timezone.utc), item["index"]),
+            key=lambda item: (item["_timestamp"] is None, item["_timestamp"] or datetime.min.replace(tzinfo=UTC), item["index"]),
         )
         timestamp_values = [
             item["_timestamp"]

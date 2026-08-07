@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import threading
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 class TrafficRecorder:
@@ -45,7 +46,7 @@ class TrafficRecorder:
         self._local.browser_timezone = str(browser_timezone or "").strip()
         self._local.worker_id = str(worker_id or "").strip()
         self._local.captcha_attempts = 0
-        self._local.started_at = datetime.now(timezone.utc)
+        self._local.started_at = datetime.now(UTC)
         self._local.buckets = defaultdict(lambda: {"bytes": 0, "bytes_sent": 0, "bytes_received": 0, "estimated": False})
 
     def has_task(self) -> bool:
@@ -191,7 +192,7 @@ class TrafficRecorder:
             return
         email = getattr(self._local, "email", "")
         started_at = getattr(self._local, "started_at", None)
-        finished_at = datetime.now(timezone.utc)
+        finished_at = datetime.now(UTC)
         buckets = getattr(self._local, "buckets", {})
         records = []
         for (stage, source), bucket in buckets.items():

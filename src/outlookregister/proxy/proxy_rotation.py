@@ -1,22 +1,24 @@
-from dataclasses import dataclass  # noqa: F401  (部分历史代码引用 dataclass 装饰器；类型已迁移到 proxy_pool_types)
 import ipaddress  # noqa: F401
 import json  # noqa: F401
 import threading  # noqa: F401
 import uuid  # noqa: F401
+from dataclasses import (
+    dataclass,  # noqa: F401  (部分历史代码引用 dataclass 装饰器；类型已迁移到 proxy_pool_types)
+)
 
-from src.outlookregister.proxy.proxy_pool_types import (  # noqa: F401  兼容旧导入
-    ProxyRotationError,
+from outlookregister.proxy.proxy_pool_config import _ProxyPoolConfig
+from outlookregister.proxy.proxy_pool_control_nodes import _ProxyPoolControlNodes
+from outlookregister.proxy.proxy_pool_core import _ProxyPoolCore
+from outlookregister.proxy.proxy_pool_sessions import _ProxyPoolSessions
+from outlookregister.proxy.proxy_pool_types import (  # noqa: F401  兼容旧导入
     ProxyLease,
-    _DeclaredLeaseState,
+    ProxyRotationError,
     _declared_lease_state,
     _declared_states,
     _declared_states_lock,
+    _DeclaredLeaseState,
 )
-from src.outlookregister.proxy.proxy_pool_config import _ProxyPoolConfig
-from src.outlookregister.proxy.proxy_pool_core import _ProxyPoolCore
-from src.outlookregister.proxy.proxy_pool_control_nodes import _ProxyPoolControlNodes
-from src.outlookregister.proxy.proxy_pool_sessions import _ProxyPoolSessions
-from src.outlookregister.proxy.proxy_pool_verify import _ProxyPoolVerify
+from outlookregister.proxy.proxy_pool_verify import _ProxyPoolVerify
 
 
 class RotatingProxyPool(_ProxyPoolConfig, _ProxyPoolCore, _ProxyPoolControlNodes, _ProxyPoolSessions, _ProxyPoolVerify):

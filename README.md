@@ -65,7 +65,7 @@ HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
 
 任务状态面板：
 1. 首次构建前端：`cd dashboard && npm install && npm run build`。
-2. 在项目根目录启动面板：`uv run uvicorn dashboard_server:app --host 127.0.0.1 --port 8765`。
+2. 在项目根目录启动面板：`uv run uvicorn outlookregister.dashboard.dashboard_server:app --host 127.0.0.1 --port 8765`。
 3. 浏览器打开`http://127.0.0.1:8765/`，在「工作流」页执行批量注册/保活，在「运行配置」页修改并持久化配置。配置保存后通过 SSE 实时通知其他面板窗口，新任务会读取新版本。
 4. 账号详情中的“补充授权”“加入 HX-Email”和“保活登录”可继续处理单个账号；操作在服务端后台线程执行，页面不会读取账号密码或 token。
 5. 新增的`Results/traffic_usage.jsonl`会按住宅注册、密保验证、OAuth 和 HX-Email API 记录观测流量；历史检查点没有流量字段，需重新运行任务后才会显示。

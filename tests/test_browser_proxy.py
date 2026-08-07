@@ -1,6 +1,6 @@
 import unittest
 
-from controllers.base_controller import build_browser_proxy_settings
+from outlookregister.browser.base_controller import build_browser_proxy_settings
 
 
 class BrowserProxySettingsTests(unittest.TestCase):

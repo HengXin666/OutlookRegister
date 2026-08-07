@@ -1,9 +1,9 @@
-import unittest
 import shutil
 import socket
+import unittest
 from urllib.parse import urlsplit
 
-from managed_mihomo import (
+from outlookregister.proxy.managed_mihomo import (
     ManagedMihomo,
     ManagedMihomoError,
     _available_loopback_port,

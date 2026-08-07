@@ -3,7 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config_store import CONFIGURED_VALUE, ConfigStore, validate_config
+from outlookregister.config.config_store import (
+    CONFIGURED_VALUE,
+    ConfigStore,
+    validate_config,
+)
 
 
 class ConfigStoreTests(unittest.TestCase):

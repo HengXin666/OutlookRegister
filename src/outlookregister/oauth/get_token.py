@@ -4,26 +4,25 @@ The lighter helpers (PKCE, proxy, diagnostics) and the public entry points
 ``get_access_token`` / ``_try_get_access_token`` live here. The two heavier
 OAuth2 routines (``refresh_oauth_token`` and ``handle_oauth2_form``) live in
 ``oauth_flow`` and are re-exported below so the historical public/private names
-keep resolving from ``src.outlookregister.oauth.get_token`` -- which is what
+keep resolving from ``outlookregister.oauth.get_token`` -- which is what
 tests and the legacy ``get_token`` shim import.
 """
 
-import json
 import base64
-import os
-import string
 import hashlib
+import os
 import secrets
-import requests
+import string
 from datetime import datetime
-from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode
 
-from src.outlookregister import PROJECT_ROOT
-from src.outlookregister.config.config_store import ConfigStore
-from src.outlookregister.oauth.oauth_flow import (
+import requests
+
+from outlookregister import PROJECT_ROOT
+from outlookregister.config.config_store import ConfigStore
+from outlookregister.oauth.oauth_flow import (
     handle_oauth2_form,
-    refresh_oauth_token,
+    refresh_oauth_token,  # noqa: F401
 )
 
 

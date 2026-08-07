@@ -5,7 +5,7 @@ reuseable account group first. The account-group cache is guarded by
 ``_account_group_lock`` (owned by the base mixin).
 """
 
-from src.outlookregister.email.hx_email_base import HXEmailError
+from outlookregister.email.hx_email_base import HXEmailError
 
 
 class _HXEmailImport:

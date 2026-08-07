@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import ipaddress
 import re
+from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
-
 
 _TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{4,128}$")
 _CONTROL_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")

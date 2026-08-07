@@ -8,17 +8,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.outlookregister.config.identity_profiles import (
-    identity_profiles, is_valid_browser_locale,
-    is_valid_country_code, is_valid_timezone,
+import outlookregister.config.config_validation as _cv
+from outlookregister.config.identity_profiles import (
+    identity_profiles,
+    is_valid_browser_locale,
+    is_valid_country_code,
+    is_valid_timezone,
 )
-from src.outlookregister.config.proxy_rotation_config import (
-    parse_control_plane_url, parse_remote_control_plane_url,
+from outlookregister.config.proxy_rotation_config import (
+    parse_control_plane_url,
+    parse_remote_control_plane_url,
     parse_remote_residential_control_url,
-    validate_proxy_endpoint, validate_rotation_token,
+    validate_proxy_endpoint,
+    validate_rotation_token,
 )
-
-import src.outlookregister.config.config_validation as _cv
 
 
 def _validate_basic_fields(config: dict[str, Any]) -> list[str]:

@@ -1,7 +1,7 @@
+import json
 import os
 import time
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class _BaseRecovery:
@@ -157,7 +157,7 @@ class _BaseRecovery:
         ))
         if resend is None:
             return False
-        requested_at = datetime.now(timezone.utc)
+        requested_at = datetime.now(UTC)
         self.smooth_click(page, resend)
         deadline = time.time() + 5
         while time.time() < deadline:

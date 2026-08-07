@@ -1,5 +1,7 @@
 import random
+
 from patchright.sync_api import sync_playwright
+
 from .base_controller import BaseBrowserController, build_browser_proxy_settings
 
 

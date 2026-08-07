@@ -1,18 +1,12 @@
 import os
 import time
-import json
-import threading
-import uuid
-from pathlib import Path
-from src.outlookregister import PROJECT_ROOT
-from src.outlookregister.oauth.get_token import get_access_token
 from concurrent.futures import ThreadPoolExecutor
-from src.outlookregister.config.utils import random_email, generate_strong_password
-from src.outlookregister.config.config_store import ConfigStore, validate_config
-from src.outlookregister.config.identity_profiles import select_identity_profile
-from src.outlookregister.proxy.proxy_rotation import ProxyRotationError, RotatingProxyPool
-from src.outlookregister.browser.patchright_controller import PatchrightController
-from src.outlookregister.browser.playwright_controller import PlaywrightController
+
+from outlookregister import PROJECT_ROOT
+from outlookregister.browser.patchright_controller import PatchrightController
+from outlookregister.browser.playwright_controller import PlaywrightController
+from outlookregister.config.config_store import ConfigStore, validate_config
+
 # --- 不确定有无帮助 ---
 # 0. 视窗大小
 # 1. CDP 检测：wait_for_timeout --> time.sleep()
@@ -20,8 +14,11 @@ from src.outlookregister.browser.playwright_controller import PlaywrightControll
 # 3. 避免短时间访问
 # 4. 模拟真人轨迹
 # 时区
+from outlookregister.core.flow_processor import (
+    process_single_flow,
+)
+from outlookregister.proxy.proxy_rotation import ProxyRotationError, RotatingProxyPool
 
-from src.outlookregister.core.flow_processor import process_single_flow  # noqa: F401 (兼容旧导入)
 
 def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100, proxy_pool=None):
     task_counter = 0

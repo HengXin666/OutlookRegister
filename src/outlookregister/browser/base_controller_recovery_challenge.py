@@ -1,9 +1,9 @@
 import os
-import time
 import re
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 
-from src.outlookregister.email.hx_email_client import HXEmailClient, HXEmailError
+from outlookregister.email.hx_email_client import HXEmailClient, HXEmailError
 
 
 class _BaseRecoveryChallenge:
@@ -63,7 +63,7 @@ class _BaseRecoveryChallenge:
         recovery_email,
     ):
         """Confirm an existing recovery address using the shared Microsoft proof flow."""
-        code_requested_at = datetime.now(timezone.utc)
+        code_requested_at = datetime.now(UTC)
         known_message_ids = None
         known_codes = None
         if isinstance(hx_email, HXEmailClient):
@@ -200,7 +200,7 @@ class _BaseRecoveryChallenge:
             code_requested_at = (
                 resend_result
                 if isinstance(resend_result, datetime)
-                else datetime.now(timezone.utc)
+                else datetime.now(UTC)
             )
             print(
                 f'[Recovery Email] - 第 {attempt} 个安全代码未通过，'

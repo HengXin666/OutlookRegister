@@ -8,8 +8,8 @@ import json
 
 import requests
 
-from src.outlookregister.dashboard.traffic_tracker import stage_for_hx_email_path
-from src.outlookregister.email.hx_email_base import HXEmailError
+from outlookregister.dashboard.traffic_tracker import stage_for_hx_email_path
+from outlookregister.email.hx_email_base import HXEmailError
 
 
 class _HXEmailTransport:

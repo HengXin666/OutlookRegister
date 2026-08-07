@@ -3,8 +3,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dashboard_server import DashboardStore, _interactive_proxy_config
-from traffic_tracker import TrafficRecorder, stage_for_hx_email_path
+from outlookregister.dashboard.dashboard_server import (
+    DashboardStore,
+    _interactive_proxy_config,
+)
+from outlookregister.dashboard.traffic_tracker import (
+    TrafficRecorder,
+    stage_for_hx_email_path,
+)
 
 
 class DashboardStoreTests(unittest.TestCase):

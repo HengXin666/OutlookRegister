@@ -9,15 +9,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from src.outlookregister.config.config_validation import (
-    CONFIGURED_VALUE,
+from outlookregister.config.config_validation import (
+    CONFIGURED_VALUE,  # noqa: F401
     ConfigError,
-    _is_secret_key,
     _merge,
-    _merge_value,
-    _number,
     _redact,
-    _SECRET_KEYS,
     validate_config,
 )
 

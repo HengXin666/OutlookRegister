@@ -11,9 +11,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from src.outlookregister.config.proxy_rotation_config import parse_control_plane_url
-
-import src.outlookregister.config.config_validators as _v
+import outlookregister.config.config_validators as _v
+from outlookregister.config.proxy_rotation_config import parse_control_plane_url
 
 CONFIGURED_VALUE = "__configured__"
 

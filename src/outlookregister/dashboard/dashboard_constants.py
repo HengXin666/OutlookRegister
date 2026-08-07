@@ -5,9 +5,8 @@ import os
 import re
 from pathlib import Path
 
-from src.outlookregister import PROJECT_ROOT
-from src.outlookregister.config.config_store import ConfigStore
-
+from outlookregister import PROJECT_ROOT
+from outlookregister.config.config_store import ConfigStore
 
 DEFAULT_RESULTS_DIR = PROJECT_ROOT / "Results"
 RESULTS_DIR = Path(os.getenv("OUTLOOK_RESULTS_DIR", str(DEFAULT_RESULTS_DIR))).expanduser()

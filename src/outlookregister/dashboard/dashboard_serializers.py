@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import json
-import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from src.outlookregister.dashboard.dashboard_constants import (
-    STAGE_LABELS, TRAFFIC_STAGE_LABELS, REGISTERED_EVIDENCE, FAILURE_STAGES,
-    _SENSITIVE_DETAIL_PATTERN, _BEARER_PATTERN, _JWT_PATTERN, _QUERY_SECRET_PATTERN,
+from outlookregister.dashboard.dashboard_constants import (
+    _BEARER_PATTERN,
+    _JWT_PATTERN,
+    _QUERY_SECRET_PATTERN,
+    _SENSITIVE_DETAIL_PATTERN,
+    TRAFFIC_STAGE_LABELS,
 )
 
 
@@ -21,8 +23,8 @@ def _parse_timestamp(value: Any) -> datetime | None:
     except (TypeError, ValueError):
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _timestamp_value(value: datetime | None) -> str | None:

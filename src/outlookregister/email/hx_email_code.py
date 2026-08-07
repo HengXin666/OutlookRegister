@@ -8,10 +8,8 @@ live safely outside the composite client module.
 """
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
-
-from src.outlookregister.email.hx_email_base import HXEmailError
 
 
 class _HXEmailCode:
@@ -171,7 +169,7 @@ class _HXEmailCode:
             position = 0
         if received_at is not None:
             return (1, received_at, -position)
-        return (0, datetime.min.replace(tzinfo=timezone.utc), -position)
+        return (0, datetime.min.replace(tzinfo=UTC), -position)
 
     @classmethod
     def _timestamp_from_item(cls, item):
@@ -209,7 +207,7 @@ class _HXEmailCode:
             if numeric > 100_000_000_000:
                 numeric /= 1000
             try:
-                parsed = datetime.fromtimestamp(numeric, tz=timezone.utc)
+                parsed = datetime.fromtimestamp(numeric, tz=UTC)
             except (OverflowError, OSError, ValueError):
                 return None
         else:
@@ -224,8 +222,8 @@ class _HXEmailCode:
                 except (TypeError, ValueError, OverflowError):
                     return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     @staticmethod
     def _format_timestamp(value):
@@ -233,7 +231,7 @@ class _HXEmailCode:
 
     @staticmethod
     def _utc_now():
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def _validate_code_timestamp(
         self,

@@ -7,7 +7,7 @@ traffic is performed via the transport mixin's ``_request``/``_v1_request``.
 
 import uuid
 
-from src.outlookregister.email.hx_email_base import HXEmailError
+from outlookregister.email.hx_email_base import HXEmailError
 
 
 class _HXEmailMailbox:

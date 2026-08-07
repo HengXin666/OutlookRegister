@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import atexit
-import base64
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import socket
@@ -14,19 +12,17 @@ import subprocess
 import tempfile
 import threading
 import time
-from urllib.parse import parse_qs, unquote, urlsplit
+from pathlib import Path
 
-
-
-from src.outlookregister.proxy.mihomo_config import (  # noqa: F401  复用并兼容旧导入
-    ManagedMihomoError,
+from outlookregister.proxy.mihomo_config import (  # noqa: F401  复用并兼容旧导入
     SUPPORTED_PROTOCOLS,
     SUPPORTED_RESIDENTIAL_PROTOCOLS,
-    build_mihomo_config,
+    ManagedMihomoError,
     _parse_residential_endpoint,
     _parse_standard_uri,
     _parse_vmess,
     _query_value,
+    build_mihomo_config,
 )
 
 PREFERRED_LOCAL_PORT = 2334

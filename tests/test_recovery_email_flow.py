@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
-from controllers.base_controller import BaseBrowserController
+from outlookregister.browser.base_controller import BaseBrowserController
 
 
 class StubController(BaseBrowserController):

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 import secrets
-from dataclasses import asdict, dataclass
 from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 

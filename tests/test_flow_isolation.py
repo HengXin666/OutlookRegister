@@ -1,11 +1,11 @@
-import threading
 import json
 import tempfile
+import threading
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
-from controllers.base_controller import BaseBrowserController
+from outlookregister.browser.base_controller import BaseBrowserController
 
 
 class FakePage:
@@ -145,7 +145,7 @@ class FlowIsolationTests(unittest.TestCase):
             return client
 
         with patch(
-            "controllers.base_controller.HXEmailClient",
+            "outlookregister.browser.base_controller.HXEmailClient",
             side_effect=create_client,
         ):
             controller.set_flow_context("flow-a")

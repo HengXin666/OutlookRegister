@@ -1,6 +1,6 @@
 import unittest
 
-from outlook_page_state import (
+from outlookregister.browser.outlook_page_state import (
     classify_outlook_page,
     is_authenticated,
     is_manual_verification,

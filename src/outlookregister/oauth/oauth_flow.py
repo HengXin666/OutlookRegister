@@ -14,7 +14,7 @@ now physically live here.
 from datetime import datetime
 from urllib.parse import urlencode
 
-from src.outlookregister.oauth import get_token as _get_token
+from outlookregister.oauth import get_token as _get_token
 
 
 def refresh_oauth_token(

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from identity_profiles import (
+from outlookregister.config.identity_profiles import (
     identity_profiles,
     is_valid_browser_locale,
     is_valid_timezone,
@@ -27,7 +27,7 @@ class IdentityProfileTests(unittest.TestCase):
             ],
         }
         with patch(
-            "identity_profiles.secrets.choice",
+            "outlookregister.config.identity_profiles.secrets.choice",
             side_effect=lambda profiles: profiles[1],
         ) as choice:
             selected = select_identity_profile(identity)

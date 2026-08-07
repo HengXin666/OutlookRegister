@@ -7,19 +7,39 @@
 
 from __future__ import annotations
 
+from outlookregister.dashboard import dashboard_routes  # noqa: F401  注册路由
+
 # 兼容旧导入：从汇总 app 模块导出 app 与 runner 单例
-from src.outlookregister.dashboard.dashboard_app import (  # noqa: F401
-    app, ACTION_RUNNER, WORKFLOW_RUNNER, CONFIG_STORE,
+from outlookregister.dashboard.dashboard_app import (  # noqa: F401
+    ACTION_RUNNER,
+    CONFIG_STORE,
+    WORKFLOW_RUNNER,
+    app,
 )
-from src.outlookregister.dashboard.dashboard_store import DashboardStore  # noqa: F401
-from src.outlookregister.dashboard.dashboard_serializers import (  # noqa: F401
-    _interactive_proxy_config, _automatic_proxy_config, _sanitize_detail,
-    _parse_timestamp, _timestamp_value, _read_jsonl, _email_from, _email_key,
-    _number, _round_seconds, _human_bytes, _traffic_stage_label,
+from outlookregister.dashboard.dashboard_constants import (  # noqa: F401
+    CHECKPOINTS_FILE,
+    FAILURE_STAGES,
+    PROJECT_ROOT,
+    RECOVERY_FILE,
+    REGISTERED_EVIDENCE,
+    RESULTS_DIR,
+    STAGE_DEFINITIONS,
+    STAGE_LABELS,
+    TRAFFIC_FILE,
+    TRAFFIC_STAGE_LABELS,
 )
-from src.outlookregister.dashboard.dashboard_constants import (  # noqa: F401
-    PROJECT_ROOT, RESULTS_DIR, CHECKPOINTS_FILE, RECOVERY_FILE, TRAFFIC_FILE,
-    STAGE_DEFINITIONS, STAGE_LABELS, TRAFFIC_STAGE_LABELS,
-    REGISTERED_EVIDENCE, FAILURE_STAGES,
+from outlookregister.dashboard.dashboard_serializers import (  # noqa: F401
+    _automatic_proxy_config,
+    _email_from,
+    _email_key,
+    _human_bytes,
+    _interactive_proxy_config,
+    _number,
+    _parse_timestamp,
+    _read_jsonl,
+    _round_seconds,
+    _sanitize_detail,
+    _timestamp_value,
+    _traffic_stage_label,
 )
-from src.outlookregister.dashboard import dashboard_routes  # noqa: F401  注册路由
+from outlookregister.dashboard.dashboard_store import DashboardStore  # noqa: F401

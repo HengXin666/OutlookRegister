@@ -1,13 +1,13 @@
-import unittest
 import json
+import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
-from get_token import (
+from outlookregister.oauth.get_token import (
     OAuthRecoveryChallengeError,
     _try_get_access_token,
-    get_proxy,
     get_access_token,
+    get_proxy,
     handle_oauth2_form,
     refresh_oauth_token,
 )
@@ -75,8 +75,8 @@ class OAuthProxyTests(unittest.TestCase):
     def test_missing_proxy_disables_environment_proxy_fallback(self):
         self.assertEqual(get_proxy(), {"http": None, "https": None})
 
-    @patch("get_token.ConfigStore")
-    @patch("get_token.requests.Session")
+    @patch("outlookregister.oauth.get_token.ConfigStore")
+    @patch("outlookregister.oauth.get_token.requests.Session")
     def test_refresh_probe_uses_explicit_flow_proxy_and_updates_token(
         self,
         session_factory,
@@ -121,8 +121,8 @@ class OAuthProxyTests(unittest.TestCase):
             ("oauth_token_refresh_probe", "oauth_token"),
         )
 
-    @patch("get_token.ConfigStore")
-    @patch("get_token.requests.Session")
+    @patch("outlookregister.oauth.get_token.ConfigStore")
+    @patch("outlookregister.oauth.get_token.requests.Session")
     def test_refresh_probe_reports_invalid_grant_without_token_values(
         self,
         session_factory,
@@ -146,7 +146,7 @@ class OAuthProxyTests(unittest.TestCase):
         self.assertEqual(result["error"], "invalid_grant")
         self.assertNotIn("old-refresh", str(result))
 
-    @patch("get_token._try_get_access_token", return_value=("refresh", "access", 123))
+    @patch("outlookregister.oauth.get_token._try_get_access_token", return_value=("refresh", "access", 123))
     def test_page_delay_is_forwarded_to_each_token_attempt(self, try_get_access_token):
         recovery_handler = object()
 
@@ -193,9 +193,9 @@ class OAuthProxyTests(unittest.TestCase):
             },
         }
         with patch("builtins.open", mock_open(read_data=json.dumps(config))), patch(
-            "get_token.handle_oauth2_form"
+            "outlookregister.oauth.get_token.handle_oauth2_form"
         ), patch(
-            "get_token.requests.Session", return_value=session
+            "outlookregister.oauth.get_token.requests.Session", return_value=session
         ):
             result = _try_get_access_token(
                 page,
@@ -233,7 +233,7 @@ class OAuthRecoveryFormTests(unittest.TestCase):
 
     def test_recovery_challenge_without_saved_email_fails_without_submitting(self):
         page = FakeOAuthRecoveryPage()
-        with patch("get_token.save_oauth_diagnostic"):
+        with patch("outlookregister.oauth.get_token.save_oauth_diagnostic"):
             with self.assertRaises(OAuthRecoveryChallengeError):
                 handle_oauth2_form(
                     page,

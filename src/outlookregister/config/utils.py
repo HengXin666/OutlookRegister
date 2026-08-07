@@ -1,6 +1,7 @@
 import random
-import string
 import secrets
+import string
+
 
 def random_email(length=random.randint(12,14)):
 

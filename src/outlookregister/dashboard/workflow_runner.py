@@ -5,15 +5,22 @@ from __future__ import annotations
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from src.outlookregister.config.config_store import ConfigError, ConfigStore, validate_config
-from src.outlookregister.browser.patchright_controller import PatchrightController
-from src.outlookregister.browser.playwright_controller import PlaywrightController
-from src.outlookregister.core.main import run_concurrent_flows
-from src.outlookregister.proxy.proxy_rotation import ProxyRotationError, RotatingProxyPool
-from src.outlookregister.dashboard.traffic_tracker import TrafficRecorder
+from outlookregister.browser.patchright_controller import PatchrightController
+from outlookregister.browser.playwright_controller import PlaywrightController
+from outlookregister.config.config_store import (
+    ConfigError,
+    ConfigStore,
+    validate_config,
+)
+from outlookregister.core.main import run_concurrent_flows
+from outlookregister.dashboard.traffic_tracker import TrafficRecorder
+from outlookregister.proxy.proxy_rotation import RotatingProxyPool
+
+
 class WorkflowError(RuntimeError):
     def __init__(self, message: str, status_code: int = 400):
         super().__init__(message)
@@ -150,6 +157,4 @@ class WorkflowRunner:
 
     @staticmethod
     def _timestamp() -> str:
-        from datetime import datetime, timezone
-
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()

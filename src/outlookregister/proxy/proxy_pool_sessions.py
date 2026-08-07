@@ -1,29 +1,17 @@
 from __future__ import annotations
 
-import ipaddress
-import json
-import threading
-import time
 import uuid
-from dataclasses import replace
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 
-from src.outlookregister.proxy.managed_mihomo import ManagedMihomo, ManagedMihomoError, SUPPORTED_PROTOCOLS
-from src.outlookregister.proxy.proxy_pool_types import ProxyLease, ProxyRotationError, _declared_lease_state
-from src.outlookregister.config.proxy_rotation_config import (
-    parse_control_plane_url,
-    parse_remote_control_plane_url,
-    parse_remote_residential_control_url,
+from outlookregister.config.proxy_rotation_config import (
     validate_proxy_endpoint,
     validate_remote_proxy_endpoint,
-    validate_rotation_token,
 )
-from src.outlookregister.config.identity_profiles import (
-    is_valid_country_code,
-    is_valid_timezone,
-    select_identity_profile,
+from outlookregister.proxy.proxy_pool_types import (
+    ProxyLease,
+    ProxyRotationError,
 )
 
 

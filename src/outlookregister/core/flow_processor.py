@@ -1,18 +1,12 @@
-import os
-import time
-import json
 import threading
 import uuid
-from pathlib import Path
-from src.outlookregister import PROJECT_ROOT
-from src.outlookregister.oauth.get_token import get_access_token
-from concurrent.futures import ThreadPoolExecutor
-from src.outlookregister.config.utils import random_email, generate_strong_password
-from src.outlookregister.config.config_store import ConfigStore, validate_config
-from src.outlookregister.config.identity_profiles import select_identity_profile
-from src.outlookregister.proxy.proxy_rotation import ProxyRotationError, RotatingProxyPool
-from src.outlookregister.browser.patchright_controller import PatchrightController
-from src.outlookregister.browser.playwright_controller import PlaywrightController
+
+from outlookregister import PROJECT_ROOT
+from outlookregister.config.identity_profiles import select_identity_profile
+from outlookregister.config.utils import generate_strong_password, random_email
+from outlookregister.oauth.get_token import get_access_token
+from outlookregister.proxy.proxy_rotation import ProxyRotationError
+
 # --- 不确定有无帮助 ---
 # 0. 视窗大小
 # 1. CDP 检测：wait_for_timeout --> time.sleep()

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
-from urllib.parse import parse_qs, parse_qs as _pq,  unquote, urlsplit, urlencode
+from urllib.parse import parse_qs, unquote, urlsplit
 
 
 class ManagedMihomoError(Exception):

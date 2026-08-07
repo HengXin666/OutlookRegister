@@ -2,13 +2,21 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
+from statistics import mean as _mean
 from typing import Any
 
-from src.outlookregister.dashboard.dashboard_serializers import _email_from, _email_key, _number, _round_seconds, _human_bytes, _traffic_stage_label  # noqa: F401
-from src.outlookregister.dashboard.dashboard_constants import (
-    REGISTERED_EVIDENCE, FAILURE_STAGES, STAGE_LABELS, TRAFFIC_STAGE_LABELS,
-    CHECKPOINTS_FILE, RECOVERY_FILE, TRAFFIC_FILE,
+from outlookregister.dashboard.dashboard_constants import (
+    TRAFFIC_FILE,
+)
+from outlookregister.dashboard.dashboard_serializers import (
+    _email_from,
+    _email_key,
+    _human_bytes,
+    _number,
+    _parse_timestamp,
+    _round_seconds,
+    _traffic_stage_label,
 )
 
 
@@ -180,7 +188,6 @@ def _duration_label(seconds):
 
 
 def _averages(accounts):
-    from statistics import mean as _mean
     duration_values = [
         account["duration_seconds"]
         for account in accounts

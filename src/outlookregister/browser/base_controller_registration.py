@@ -1,5 +1,6 @@
-import time
 import random
+import time
+
 from faker import Faker
 
 
@@ -53,7 +54,7 @@ class _BaseRegistration:
                 self.wait_random_ratio(page, 0.06)
                 domain_btn = page.get_by_text("@outlook.com")
                 self.smooth_click(page, domain_btn)
-                option_btn = page.locator(f'[role="option"]:text-is("@hotmail.com")')
+                option_btn = page.locator('[role="option"]:text-is("@hotmail.com")')
                 self.smooth_click(page, option_btn)
 
 
