@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from outlookregister import PROJECT_ROOT
 from outlookregister.config.config_store import ConfigError
+from outlookregister.config.proxy_rotation_config import RESIDENTIAL_SOURCE
 from outlookregister.dashboard.dashboard_actions import DashboardActionError
 from outlookregister.dashboard.dashboard_app import (
     ACTION_RUNNER,
@@ -79,8 +80,13 @@ def check_proxy_rotation(payload: dict[str, Any]) -> dict[str, Any]:
         verification = pool.check_connection()
         updated = CONFIG_STORE.update({
             "proxy": "",
+            "proxy_source": RESIDENTIAL_SOURCE,
             "strict_isolation": True,
-            "isolate_hx_email_group": True,
+            # Group routing is an explicit user setting now; enabling the
+            # residential source must not silently turn per-flow groups back on.
+            "isolate_hx_email_group": bool(
+                current_config.get("isolate_hx_email_group", False)
+            ),
             "prevent_direct_network_leaks": True,
             "identity": {
                 "country_selection": "proxy",

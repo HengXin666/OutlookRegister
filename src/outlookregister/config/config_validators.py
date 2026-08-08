@@ -1,7 +1,9 @@
 """Internal validation blocks backing ``validate_config``.
 
 Private ``_validate_*`` helpers extracted from ``config_validation`` to keep
-that module concise; not re-exported from ``config_store``.
+that module concise; not re-exported from ``config_store``. The proxy-source
+and HX-Email group blocks live in ``config_source_validators`` and are
+re-exported here so ``config_validation`` keeps a single module alias.
 """
 
 from __future__ import annotations
@@ -9,6 +11,12 @@ from __future__ import annotations
 from typing import Any
 
 import outlookregister.config.config_validation as _cv
+from outlookregister.config.config_source_validators import (  # noqa: F401
+    _stage_group_name,
+    _validate_hx_email_groups,
+    _validate_proxy_source,
+    _validate_runtime_manual,
+)
 from outlookregister.config.identity_profiles import (
     identity_profiles,
     is_valid_browser_locale,
@@ -223,6 +231,7 @@ def _validate_identity(
         )
     )
     return errors, identity, require_dynamic
+
 
 
 def _validate_runtime_dynamic(

@@ -17,12 +17,14 @@ from outlookregister.config.config_store import (
     validate_config,
 )
 from outlookregister.config.identity_profiles import select_identity_profile
+from outlookregister.config.proxy_rotation_config import MANUAL_SOURCE
 from outlookregister.dashboard.dashboard_action_constants import (
     HX_EMAIL_HANDOFF_DELAY_SECONDS,
     DashboardActionError,
 )
 from outlookregister.email.hx_email_client import HXEmailClient
-from outlookregister.proxy.proxy_rotation import ProxyRotationError, RotatingProxyPool
+from outlookregister.proxy.proxy_pool_factory import build_proxy_pool
+from outlookregister.proxy.proxy_rotation import ProxyRotationError
 
 
 def _traffic_recorder_runtime(results_dir):
@@ -49,11 +51,13 @@ class _ImportActions:
                 proxy_pool,
                 identity_profile["country_code"],
             )
-        if config.get("isolate_hx_email_group", config.get("strict_isolation", True)):
+        if config.get("isolate_hx_email_group", False):
             base_group = str(
-                hx_config.get("account_group", "OutlookRegister 自动注册")
+                hx_config.get("register_account_group")
+                or hx_config.get("account_group")
+                or "OutlookRegister 自动注册"
             ).strip()
-            hx_config["account_group"] = (
+            hx_config["register_account_group"] = (
                 f"{base_group} [dashboard-{uuid.uuid4().hex[:8]}]"
             )
 
@@ -134,7 +138,8 @@ class _ImportActions:
     def _proxy_pool(self, config: dict[str, Any], required_pool_size: int):
         if config.get("debug"):
             return None
-        if not config.get("proxy_rotation"):
+        manual = str(config.get("proxy_source") or "").strip().casefold() == MANUAL_SOURCE
+        if not config.get("proxy_rotation") and not manual:
             # Keep lightweight adapters usable, but never let a configured
             # dynamic/strict deployment silently fall back to direct traffic.
             if config.get("strict_isolation") is True or "identity" in config:
@@ -147,12 +152,14 @@ class _ImportActions:
         errors = validate_config(config, for_run=True)
         if errors:
             raise DashboardActionError("配置不允许执行该操作: " + "；".join(errors))
-        proxy_config = dict(config.get("proxy_rotation") or {})
-        proxy_config["required_pool_size"] = max(1, int(required_pool_size))
         try:
-            return RotatingProxyPool(proxy_config)
+            return build_proxy_pool(
+                config,
+                required_pool_size=max(1, int(required_pool_size)),
+                config_path=self.project_root / "config.json",
+            )
         except ProxyRotationError as exc:
-            raise DashboardActionError(f"HX-ProxyGroup 配置无效: {exc}") from exc
+            raise DashboardActionError(f"代理配置无效: {exc}") from exc
 
     @staticmethod
     def _acquire_proxy(proxy_pool, country_code=""):

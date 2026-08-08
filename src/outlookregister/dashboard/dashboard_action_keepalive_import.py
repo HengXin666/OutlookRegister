@@ -64,7 +64,9 @@ class _KeepaliveImportActions:
         hx_config = dict(
             (context.config.get("recovery_email") or {}).get("hx_email") or {}
         )
-        imported = context.controller.get_flow_hx_email().import_outlook_account(
+        # Keepalive updates in place when the configured group already holds the
+        # account, so a repeated run never creates a duplicate entry.
+        imported = context.controller.get_flow_hx_email().upsert_outlook_account(
             email=email,
             password=password,
             recovery_email=context.recovery_email,
@@ -74,11 +76,19 @@ class _KeepaliveImportActions:
                 getattr(context.proxy_lease, "proxy", "")
                 or str(hx_config.get("proxy_url") or "").strip()
             ),
+            stage="keepalive",
         )
+        action = "更新已有账号" if imported["mode"] == "updated" else "新增导入"
         self._append_checkpoint(
             email,
             password,
             "hx_email_imported",
-            f'保活后加入 HX-Email account_id={imported["account_id"]}',
+            f'保活后加入 HX-Email account_id={imported["account_id"]}, '
+            f'group_id={imported["group_id"]}, mode={imported["mode"]}',
         )
-        self._mark_keepalive_step(email, "hx_email", "completed", "账号已加入 HX-Email")
+        self._mark_keepalive_step(
+            email,
+            "hx_email",
+            "completed",
+            f"账号已加入 HX-Email（{action}）",
+        )

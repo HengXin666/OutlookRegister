@@ -12,6 +12,13 @@ _CONTROL_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _CONTROL_PLANE_SCHEMES = {"http", "https"}
 _PROXY_SCHEMES = {"http", "https", "socks5"}
 
+RESIDENTIAL_SOURCE = "residential"
+MANUAL_SOURCE = "manual"
+PROXY_SOURCES = (RESIDENTIAL_SOURCE, MANUAL_SOURCE)
+
+# A manual list is operator-pasted text, so keep the bound generous but finite.
+MANUAL_PROXY_LIMIT = 5000
+
 
 @dataclass(frozen=True)
 class ControlPlaneURL:
@@ -158,6 +165,58 @@ def validate_remote_proxy_endpoint(value: str) -> str:
     if _is_loopback_host(urlsplit(proxy).hostname or ""):
         raise ValueError("HX-ProxyGroup 远程数据面不能使用回环地址")
     return proxy
+
+
+def parse_proxy_source(value: str) -> str:
+    """Return the configured proxy source, defaulting to the residential pool."""
+    source = str(value or RESIDENTIAL_SOURCE).strip().casefold()
+    if source not in PROXY_SOURCES:
+        raise ValueError(
+            "proxy_source 必须是 " + " 或 ".join(PROXY_SOURCES)
+        )
+    return source
+
+
+def parse_manual_proxy_lines(value: object) -> list[str]:
+    """Normalize an operator-pasted manual proxy list into ordered entries.
+
+    Accepts either a list of entries or one multi-line string. Blank lines and
+    ``#`` comments are dropped, every remaining line must be a valid proxy
+    endpoint, and duplicates are collapsed while preserving first-seen order so
+    a pasted list consumes each distinct proxy exactly once.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_lines = value.splitlines()
+    elif isinstance(value, (list, tuple)):
+        raw_lines = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("manual_proxy_pool 的每一项必须是字符串")
+            raw_lines.extend(item.splitlines())
+    else:
+        raise ValueError("manual_proxy_pool 必须是字符串或字符串列表")
+
+    entries: list[str] = []
+    seen: set[str] = set()
+    for index, raw_line in enumerate(raw_lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            proxy = validate_proxy_endpoint(line)
+        except ValueError as exc:
+            raise ValueError(f"manual_proxy_pool 第 {index} 行无效: {exc}") from exc
+        if proxy in seen:
+            continue
+        seen.add(proxy)
+        entries.append(proxy)
+        if len(entries) > MANUAL_PROXY_LIMIT:
+            raise ValueError(
+                f"manual_proxy_pool 最多支持 {MANUAL_PROXY_LIMIT} 行代理"
+            )
+    return entries
 
 
 def _is_loopback_host(host: str) -> bool:

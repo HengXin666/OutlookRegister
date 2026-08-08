@@ -53,6 +53,14 @@ class _HXEmailBase:
         self.account_group = str(
             config.get("account_group", "OutlookRegister 自动注册")
         ).strip()
+        # Registration and keepalive can target different groups. Each falls
+        # back to the shared ``account_group`` so older configs keep working.
+        self.register_account_group = str(
+            config.get("register_account_group") or self.account_group
+        ).strip()
+        self.keepalive_account_group = str(
+            config.get("keepalive_account_group") or self.account_group
+        ).strip()
         self.account_group_color = str(config.get("account_group_color", "#238636")).strip()
         self.session = session or requests.Session()
         try:
@@ -62,7 +70,17 @@ class _HXEmailBase:
         self.access_token = ""
         self._traffic_recorder = None
         self._account_group_lock = threading.Lock()
-        self._account_group = None
+        # Cached per group name: one client may provision both stage groups.
+        self._account_groups = {}
+
+    def group_name_for_stage(self, stage=""):
+        """Return the configured HX-Email group for a workflow stage."""
+        normalized = str(stage or "").strip().casefold()
+        if normalized == "keepalive":
+            return self.keepalive_account_group or self.account_group
+        if normalized == "register":
+            return self.register_account_group or self.account_group
+        return self.account_group
 
     def set_traffic_recorder(self, recorder):
         self._traffic_recorder = recorder

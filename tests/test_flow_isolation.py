@@ -155,8 +155,15 @@ class FlowIsolationTests(unittest.TestCase):
             second = controller.get_flow_hx_email()
 
         self.assertIsNot(first, second)
-        self.assertEqual(first.config["account_group"], "OutlookRegister [flow-a]")
-        self.assertEqual(second.config["account_group"], "OutlookRegister [flow-b]")
+        # Only the registration group is flow-suffixed; keepalive needs a stable
+        # group so it can find and update accounts it imported earlier.
+        self.assertEqual(
+            first.config["register_account_group"], "OutlookRegister [flow-a]"
+        )
+        self.assertEqual(
+            second.config["register_account_group"], "OutlookRegister [flow-b]"
+        )
+        self.assertEqual(first.config["account_group"], "OutlookRegister")
         self.assertTrue(first.closed)
 
     def test_clearing_thread_proxy_removes_flow_override(self):

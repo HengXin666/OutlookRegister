@@ -12,7 +12,10 @@ import copy
 from typing import Any
 
 import outlookregister.config.config_validators as _v
-from outlookregister.config.proxy_rotation_config import parse_control_plane_url
+from outlookregister.config.proxy_rotation_config import (
+    MANUAL_SOURCE,
+    parse_control_plane_url,
+)
 
 CONFIGURED_VALUE = "__configured__"
 
@@ -98,6 +101,12 @@ def validate_config(config: dict[str, Any], *, for_run: bool = False) -> list[st
     """Return stable, user-facing validation errors without exposing secrets."""
     errors = _v._validate_basic_fields(config)
 
+    source_errors, proxy_source, manual_entries = _v._validate_proxy_source(config)
+    errors.extend(source_errors)
+    manual_mode = proxy_source == MANUAL_SOURCE
+
+    errors.extend(_v._validate_hx_email_groups(config))
+
     (
         rotation_errors,
         _rotation_endpoint,
@@ -109,22 +118,34 @@ def validate_config(config: dict[str, Any], *, for_run: bool = False) -> list[st
     ) = _v._validate_proxy_rotation(config)
     errors.extend(rotation_errors)
 
+    # A manual list derives identity from the verified exit IP, exactly like the
+    # automatic residential mode does.
     identity_errors, identity, require_dynamic = _v._validate_identity(
-        config, auto_identity
+        config, auto_identity or manual_mode
     )
     errors.extend(identity_errors)
 
-    errors.extend(
-        _v._validate_runtime_dynamic(
-            config,
-            identity,
-            proxy_rotation,
-            auto_identity,
-            require_dynamic,
-            control_url,
-            rotation_url,
-            base_url,
-            for_run,
+    if manual_mode:
+        errors.extend(
+            _v._validate_runtime_manual(
+                config,
+                manual_entries,
+                require_dynamic,
+                for_run,
+            )
         )
-    )
+    else:
+        errors.extend(
+            _v._validate_runtime_dynamic(
+                config,
+                identity,
+                proxy_rotation,
+                auto_identity,
+                require_dynamic,
+                control_url,
+                rotation_url,
+                base_url,
+                for_run,
+            )
+        )
     return errors

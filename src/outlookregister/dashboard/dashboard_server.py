@@ -8,6 +8,9 @@
 from __future__ import annotations
 
 from outlookregister.dashboard import dashboard_routes  # noqa: F401  注册路由
+from outlookregister.dashboard import (  # noqa: F401  注册手动代理路由
+    dashboard_routes_manual_proxy,
+)
 
 # 兼容旧导入：从汇总 app 模块导出 app 与 runner 单例
 from outlookregister.dashboard.dashboard_app import (  # noqa: F401

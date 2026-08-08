@@ -4,8 +4,13 @@
     "proxy": "",
     "debug": false,
     "strict_isolation": true,
-    "isolate_hx_email_group": true,
+    "isolate_hx_email_group": false,
     "prevent_direct_network_leaks": true,
+    "proxy_source": "residential",
+    "manual_proxy_pool": {
+        "pending": [],
+        "used": []
+    },
     "identity": {
         "country_selection": "proxy",
         "require_dynamic_residential_ip": true
@@ -50,6 +55,8 @@
             "code_max_age_seconds": 300,
             "caller_id": "outlook-register",
             "account_group": "OutlookRegister 自动注册",
+            "register_account_group": "OutlookRegister 自动注册",
+            "keepalive_account_group": "OutlookRegister 保活",
             "account_group_color": "#238636",
             "proxy_url": ""
         }

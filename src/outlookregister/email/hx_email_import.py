@@ -1,15 +1,16 @@
 """Account import mixin for ``HXEmailClient``.
 
-Imports a freshly authorized Outlook account into HX-Email, ensuring a
-reuseable account group first. The account-group cache is guarded by
-``_account_group_lock`` (owned by the base mixin).
+Places a freshly authorized Outlook account into HX-Email, ensuring a reusable
+account group first. Registration always imports; keepalive upserts, so a
+returning account is updated in place instead of re-imported. The account-group
+cache is guarded by ``_account_group_lock`` (owned by the base mixin).
 """
 
 from outlookregister.email.hx_email_base import HXEmailError
 
 
 class _HXEmailImport:
-    """Outlook account import + account-group provisioning."""
+    """Outlook account import/update + account-group provisioning."""
 
     def import_outlook_account(
         self,
@@ -19,44 +20,48 @@ class _HXEmailImport:
         client_id,
         refresh_token,
         proxy_url="",
+        stage="register",
     ):
-        group = self._ensure_account_group(proxy_url)
-        imported = self._v1_request(
-            "POST",
-            "/api/v1/email-accounts/import",
-            json={
-                "text": f"{email}----{password}----{client_id}----{refresh_token}",
-                "provider": "outlook",
-                "group_id": group["id"],
-                "duplicate_strategy": "overwrite",
-                "add_to_pool": False,
-            },
-            expected=(200, 201),
+        """Import a newly registered account into its configured group."""
+        return self.upsert_outlook_account(
+            email=email,
+            password=password,
+            recovery_email=recovery_email,
+            client_id=client_id,
+            refresh_token=refresh_token,
+            proxy_url=proxy_url,
+            stage=stage,
+            reuse_existing=False,
         )
-        if imported.get("failed"):
-            raise HXEmailError(f"HX-Email 导入账号失败: {imported.get('errors')}")
 
-        search = self._v1_request(
-            "GET",
-            "/api/v1/email-accounts/search",
-            params={"q": email},
-        )
-        account = next(
-            (
-                item for item in search.get("accounts", [])
-                if str(item.get("primary_address", "")).lower() == email.lower()
-            ),
-            None,
-        )
-        if not account:
-            raise HXEmailError("HX-Email 导入后未找到账号")
+    def upsert_outlook_account(
+        self,
+        email,
+        password,
+        recovery_email,
+        client_id,
+        refresh_token,
+        proxy_url="",
+        stage="keepalive",
+        reuse_existing=True,
+    ):
+        """Update the account when the group already holds it, else import it.
 
-        remark = (
-            f"登录密码: {password}\n"
-            f"密保邮箱: {recovery_email or '未触发'}\n"
-            "OAuth2: 已授权并导入 refresh_token\n"
-            "来源: OutlookRegister 自动注册"
-        )
+        ``reuse_existing`` is what separates keepalive from registration: a
+        keepalive run must not create a second copy of an account the group
+        already tracks, while registration always starts from an import.
+        """
+        group = self._ensure_account_group(proxy_url, stage=stage)
+        group_id = group["id"]
+
+        account = self._find_group_account(email, group_id) if reuse_existing else None
+        mode = "updated" if account else "imported"
+        if account is None:
+            self._import_account_text(email, password, client_id, refresh_token, group_id)
+            account = self._find_group_account(email, group_id, any_group=True)
+            if not account:
+                raise HXEmailError("HX-Email 导入后未找到账号")
+
         account_id = account["id"]
         updated = self._v1_request(
             "PUT",
@@ -65,8 +70,8 @@ class _HXEmailImport:
                 "password": password,
                 "client_id": client_id,
                 "refresh_token": refresh_token,
-                "group_id": group["id"],
-                "remark": remark,
+                "group_id": group_id,
+                "remark": self._account_remark(password, recovery_email, stage, mode),
                 "status": "active",
                 "provider": "outlook",
             },
@@ -96,23 +101,73 @@ class _HXEmailImport:
             )
         return {
             "account_id": account_id,
-            "group_id": group["id"],
+            "group_id": group_id,
             "usable_email_id": usable_email_id,
+            "mode": mode,
         }
 
-    def _ensure_account_group(self, proxy_url):
-        with self._account_group_lock:
-            if self._account_group is not None:
-                return self._account_group
+    def _import_account_text(self, email, password, client_id, refresh_token, group_id):
+        imported = self._v1_request(
+            "POST",
+            "/api/v1/email-accounts/import",
+            json={
+                "text": f"{email}----{password}----{client_id}----{refresh_token}",
+                "provider": "outlook",
+                "group_id": group_id,
+                "duplicate_strategy": "overwrite",
+                "add_to_pool": False,
+            },
+            expected=(200, 201),
+        )
+        if imported.get("failed"):
+            raise HXEmailError(f"HX-Email 导入账号失败: {imported.get('errors')}")
+        return imported
 
-            group = self._find_account_group()
+    def _find_group_account(self, email, group_id, any_group=False):
+        """Return the account for ``email``, optionally restricted to a group."""
+        search = self._v1_request(
+            "GET",
+            "/api/v1/email-accounts/search",
+            params={"q": email},
+        )
+        target = str(email or "").strip().lower()
+        for item in search.get("accounts", []) or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("primary_address", "")).strip().lower() != target:
+                continue
+            if not any_group and item.get("group_id") != group_id:
+                continue
+            if item.get("id"):
+                return item
+        return None
+
+    @staticmethod
+    def _account_remark(password, recovery_email, stage, mode):
+        source = "OutlookRegister 自动保活" if stage == "keepalive" else "OutlookRegister 自动注册"
+        action = "分组内已存在，已更新" if mode == "updated" else "新增导入"
+        return (
+            f"登录密码: {password}\n"
+            f"密保邮箱: {recovery_email or '未触发'}\n"
+            "OAuth2: 已授权并导入 refresh_token\n"
+            f"来源: {source}（{action}）"
+        )
+
+    def _ensure_account_group(self, proxy_url, stage=""):
+        group_name = self.group_name_for_stage(stage)
+        with self._account_group_lock:
+            cached = self._account_groups.get(group_name)
+            if cached is not None:
+                return cached
+
+            group = self._find_account_group(group_name)
             if group is None:
                 try:
                     group = self._v1_request(
                         "POST",
                         "/api/v1/groups",
                         json={
-                            "name": self.account_group,
+                            "name": group_name,
                             "color": self.account_group_color,
                             "proxy_url": proxy_url,
                         },
@@ -123,16 +178,17 @@ class _HXEmailImport:
                     # currently exposes a concurrent duplicate as HTTP 500.
                     if exc.status_code not in (409, 500):
                         raise
-                    group = self._find_account_group()
+                    group = self._find_account_group(group_name)
                     if group is None:
                         raise
 
             if not isinstance(group, dict) or not group.get("id"):
                 raise HXEmailError("HX-Email 分组响应缺少 ID")
-            self._account_group = group
+            self._account_groups[group_name] = group
             return group
 
-    def _find_account_group(self):
+    def _find_account_group(self, group_name=""):
+        target = str(group_name or self.account_group)
         groups = self._v1_request("GET", "/api/v1/groups")
         if not isinstance(groups, list):
             raise HXEmailError("HX-Email 分组响应格式无效")
@@ -140,8 +196,7 @@ class _HXEmailImport:
             (
                 group
                 for group in groups
-                if isinstance(group, dict)
-                and str(group.get("name", "")) == self.account_group
+                if isinstance(group, dict) and str(group.get("name", "")) == target
             ),
             None,
         )

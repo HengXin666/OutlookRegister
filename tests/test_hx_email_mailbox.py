@@ -185,7 +185,15 @@ class HXEmailClientMailboxTests(unittest.TestCase):
             proxy_url="http://127.0.0.1:7890",
         )
 
-        self.assertEqual(result, {"account_id": 5, "group_id": 3, "usable_email_id": 8})
+        self.assertEqual(
+            result,
+            {
+                "account_id": 5,
+                "group_id": 3,
+                "usable_email_id": 8,
+                "mode": "imported",
+            },
+        )
         group_payload = session.calls[1][2]["json"]
         self.assertEqual(group_payload["proxy_url"], "http://127.0.0.1:7890")
         update_payload = session.calls[4][2]["json"]

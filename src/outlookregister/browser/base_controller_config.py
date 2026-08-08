@@ -24,9 +24,9 @@ class _BaseControllerConfig:
         self.proxy = data["proxy"]
         self.debug = bool(data.get("debug", False))
         self.strict_isolation = bool(data.get("strict_isolation", True)) and not self.debug
-        self.isolate_hx_email_group = bool(
-            data.get("isolate_hx_email_group", self.strict_isolation)
-        )
+        # Off by default: configured stage groups are the normal way to route
+        # accounts, per-flow suffixes are opt-in.
+        self.isolate_hx_email_group = bool(data.get("isolate_hx_email_group", False))
         self.prevent_direct_network_leaks = bool(
             data.get("prevent_direct_network_leaks", True)
         )
@@ -118,10 +118,14 @@ class _BaseControllerConfig:
 
         hx_email_config = dict(self.recovery_email_config.get("hx_email") or {})
         if self.isolate_hx_email_group:
+            # Per-flow isolation only applies to registration; keepalive must
+            # keep a stable group so it can find and update existing accounts.
             base_group = str(
-                hx_email_config.get("account_group", "OutlookRegister 自动注册")
+                hx_email_config.get("register_account_group")
+                or hx_email_config.get("account_group")
+                or "OutlookRegister 自动注册"
             ).strip()
-            hx_email_config["account_group"] = (
+            hx_email_config["register_account_group"] = (
                 f"{base_group} [{self.thread_local.flow_id}]"
             )
         flow_client = _base_controller.HXEmailClient(hx_email_config)

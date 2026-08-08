@@ -15,6 +15,7 @@ from outlookregister.browser.base_controller_recovery_challenge import (
 )
 from outlookregister.browser.base_controller_registration import _BaseRegistration
 from outlookregister.browser.base_controller_resources import _BaseControllerResources
+from outlookregister.dashboard.traffic_tracker import TrafficRecorder  # noqa: F401
 from outlookregister.email.hx_email_client import HXEmailClient  # noqa: F401
 
 

@@ -6,6 +6,8 @@ from outlookregister import PROJECT_ROOT
 from outlookregister.browser.patchright_controller import PatchrightController
 from outlookregister.browser.playwright_controller import PlaywrightController
 from outlookregister.config.config_store import ConfigStore, validate_config
+from outlookregister.config.config_validators import _stage_group_name
+from outlookregister.config.proxy_rotation_config import MANUAL_SOURCE
 
 # --- 不确定有无帮助 ---
 # 0. 视窗大小
@@ -17,7 +19,8 @@ from outlookregister.config.config_store import ConfigStore, validate_config
 from outlookregister.core.flow_processor import (
     process_single_flow,
 )
-from outlookregister.proxy.proxy_rotation import ProxyRotationError, RotatingProxyPool
+from outlookregister.proxy.proxy_pool_factory import build_proxy_pool
+from outlookregister.proxy.proxy_rotation import ProxyRotationError
 
 
 def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100, proxy_pool=None):
@@ -75,38 +78,61 @@ if __name__ == "__main__":
         print('[Config] 配置不允许启动任务: ' + '；'.join(validation_errors))
         exit(1)
 
-    proxy_pool = None
     proxy_rotation_cfg = dict(data.get("proxy_rotation") or {})
     auto_rotation = bool(str(
         proxy_rotation_cfg.get("control_url")
         or proxy_rotation_cfg.get("rotation_url")
         or ""
     ).strip())
+    manual_mode = str(data.get("proxy_source") or "").strip().casefold() == MANUAL_SOURCE
     if strict_isolation and not debug:
-        required = (
-            (auto_rotation or proxy_rotation_cfg.get("enabled"))
-            and (auto_rotation or proxy_rotation_cfg.get("session_scoped"))
-            and (auto_rotation or proxy_rotation_cfg.get("check_proxy"))
-            and (auto_rotation or proxy_rotation_cfg.get("enforce_unique_exit_ip"))
-            and (auto_rotation or proxy_rotation_cfg.get("verify_browser_exit_ip"))
-            and data.get("isolate_hx_email_group", True)
-            and data.get("prevent_direct_network_leaks", True)
+        # A deterministic per-stage group name satisfies the isolation contract
+        # just as well as a per-flow group, so accept either.
+        grouped = bool(
+            data.get("isolate_hx_email_group", False)
+            or _stage_group_name(data, "register")
         )
-        if not required:
-            print(
+        if manual_mode:
+            required = grouped and data.get("prevent_direct_network_leaks", True)
+            requirement_text = (
+                "[ProxyRotate] 严格隔离要求 prevent_direct_network_leaks，"
+                "以及 register_account_group 或 isolate_hx_email_group 之一。"
+            )
+        else:
+            required = (
+                (auto_rotation or proxy_rotation_cfg.get("enabled"))
+                and (auto_rotation or proxy_rotation_cfg.get("session_scoped"))
+                and (auto_rotation or proxy_rotation_cfg.get("check_proxy"))
+                and (auto_rotation or proxy_rotation_cfg.get("enforce_unique_exit_ip"))
+                and (auto_rotation or proxy_rotation_cfg.get("verify_browser_exit_ip"))
+                and grouped
+                and data.get("prevent_direct_network_leaks", True)
+            )
+            requirement_text = (
                 "[ProxyRotate] 严格隔离要求 enabled、session_scoped、"
                 "check_proxy、enforce_unique_exit_ip、verify_browser_exit_ip、"
-                "isolate_hx_email_group 以及 prevent_direct_network_leaks 全部启用。"
+                "prevent_direct_network_leaks，以及 register_account_group 或 "
+                "isolate_hx_email_group 之一。"
             )
+        if not required:
+            print(requirement_text)
             exit(1)
-    proxy_rotation_cfg["required_pool_size"] = concurrent_flows
-    if (proxy_rotation_cfg.get("enabled") or auto_rotation) and not debug:
-        try:
-            proxy_pool = RotatingProxyPool(proxy_rotation_cfg)
-            print("[ProxyRotate] 已启用 HX-ProxyGroup 住宅代理节点池")
-        except ProxyRotationError as e:
-            print(f"[ProxyRotate] 配置错误: {e}")
-            exit(1)
+
+    try:
+        proxy_pool = build_proxy_pool(
+            data,
+            required_pool_size=concurrent_flows,
+            config_path=PROJECT_ROOT / 'config.json',
+        )
+    except ProxyRotationError as e:
+        print(f"[ProxyRotate] 配置错误: {e}")
+        exit(1)
+    if proxy_pool is not None:
+        print(
+            "[ProxyRotate] 已启用手动代理列表"
+            if manual_mode
+            else "[ProxyRotate] 已启用 HX-ProxyGroup 住宅代理节点池"
+        )
 
     if data["choose_browser"] =="patchright":
         selected_controller = PatchrightController()

@@ -9,7 +9,7 @@ Outlook 注册机
 
 设置相关：  
 1.playwright使用性较差,如果使用playwright，则需要自行寻找指纹浏览器并填写绝对路径。  
-2.推荐使用patchright；批量流程不再切换本地直连或静态代理，而是从 HX-ProxyGroup 声明的住宅节点池租用固定节点。
+2.推荐使用patchright；批量流程不再切换本地直连或静态代理，而是二选一：从 HX-ProxyGroup 声明的住宅节点池租用固定节点（`proxy_source="residential"`，默认），或从手动代理列表按行取用（`proxy_source="manual"`）。
 3.`Bot_protection_wait`单位为秒。  
 4.`client_id`与`redirect_url`可以前往[Azure](https://azure.microsoft.com/zh-cn?OCID=cmmyhidqdn5_brandzone__EFID__)注册获取，不需要Oauth2可留空。  
 5.`client_id`与`redirect_url`格式通常类似于`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`和`http://localhost:8000`。  
@@ -17,7 +17,7 @@ Outlook 注册机
 
 使用教程：  
 1.先复制安全模板：`cp config.json.example config.json`。`config.json`和`Results/`只保存在本地，分别用于运行配置和账号、令牌、日志等运行产物，不要使用`git add -f`提交。  
-2.不要配置顶层静态`proxy`，也不需要填写国家、浏览器语言、时区、token 或 Listener。在面板的「运行配置」中只粘贴完整的 HX-ProxyGroup 住宅控制 URL（`https://主机/ctl/<control-token>`），点击「校验并启用」；校验成功后程序会自动保存全部住宅配置。
+2.不要配置顶层静态`proxy`，也不需要填写国家、浏览器语言、时区、token 或 Listener。在面板的「运行配置」页先选择代理来源：住宅节点池只需粘贴完整的 HX-ProxyGroup 控制 URL（`https://主机/ctl/<control-token>`），手动代理列表则每行粘贴一个完整代理（如`http://账号:密码@ip:端口`）。两者都点击「校验并启用」，校验成功后程序会自动保存对应配置。
 3.在面板的「工作流」页提交批量注册或批量保活；批量操作统一从面板启动，不直接使用脚本作为批量入口。
 4.如果你需要Oauth2，请在配置页启用`oauth2.enable_oauth2`并填写`Scopes`、`client_id`与`redirect_url`。
 5.安装相关依赖`pip install -r requirements.txt`，如果未安装相关浏览器，使用`patchright install chromium`。  
@@ -39,6 +39,14 @@ HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
 
 并行租约与切流说明：同一 control URL 的租约在整个进程内共享，即使不同批量任务各自创建代理池，也不会同时领取同一 index。每个 flow 调用 `POST /ctl/<token>/nodes/<index>/next` 换出站 IP；API 提取模式通过 `residential_endpoint` 建立 `浏览器 -> 本机 Mihomo -> 住宅 IP:port`，其他模式再使用浏览器兼容入口或 `endpoints[]`。注册、密保、OAuth 和完成后的 HX-Email 导入贯穿使用同一个 flow 身份；`post_registration_route`固定为`residential`。请同时保证渠道`session_count`和供应商`max_concurrent_sessions`不小于住宅并发数。可用 `HX_MIHOMO_BIN` 指定 Mihomo 可执行文件；本机首实例优先监听 `127.0.0.1:2334`，并发实例使用互不共享的独立环回端口，并在 flow 释放后停止。旧版`rotation_url`以及分离式`base_url`、`tokens`仍兼容，但不再是推荐配置。
 
+手动代理列表（一行一个，每行只用一次）：
+1. 在面板「运行配置」页把代理来源切换为「手动代理列表」，在「待用」框中每行粘贴一个完整代理 URL，如`http://账号:密码@1.2.3.4:8000`。协议支持`http`、`https`、`socks5`，必须显式写出；空行与`#`注释行会被忽略，重复行只保留第一次出现。
+2. 点击「校验并启用」只对第一行做一次真实出口探针，用于确认列表可用，**不消费**该行。校验成功后会保存待用列表并把国家来源切换为按代理探测，同时显示出口 IP、国家和时区。
+3. 每个 flow 取走一行，用完即从「待用」移入「回收」框展示，不会退回待用，因此同一行不会被第二个 flow 复用。取用时探针失败的行同样计入已用，但单次取用最多尝试`proxy_rotation.max_rotate_retries + 1`行，避免一次网络抖动烧掉整个列表。
+4. 与住宅模式一致：同一个 flow 从头到尾固定同一个代理、国家、浏览器语言、时区和出口 IP；活动出口 IP 仍然去重，两行代理出口相同时会自动换下一行。国家、语言、时区由出口探针决定，无需手填。
+5. 「全部退回待用」把回收框内容整体移回待用以便重复使用，「清空回收」只清列表不影响待用。列表耗尽时会明确报错，应补充新的代理行或降低并发。
+6. 手动模式不要求填写 HX-ProxyGroup 控制 URL；切回住宅模式时原有住宅配置仍然保留。手动代理行与控制 URL 同样属于凭据，不要放进截图、工单或公共日志。
+
 完全注册流程：面板提交任务后依次执行「注册」→「填写密保邮箱」→「获取 OAuth 授权」→「加入 HX-Email」。每个阶段会写入检查点；后续阶段失败不会丢失已生成的账号凭据。
 
 完全保活流程：在面板选择账号和「账号密码登录」或「密保邮箱取件登录」→如出现账号锁定页，自动点击「继续」并执行有界的按压验证→仍未通过时保留浏览器等待人工处理→如缺少授权则补充 OAuth→如配置启用则加入 HX-Email。保活队列会显示当前步骤和最近运行日志；运行中可随时点击「暂停」，工作线程到达安全检查点后停止自动化但不关闭已经启动的浏览器，人工操作后点击「继续」会从当前页面重新识别。整个流程复用同一个住宅节点租约，人工验证超时后需要重新提交该账号的保活任务。
@@ -46,12 +54,13 @@ HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
 保活的“如有”判定基准：
 1. 人工验证：账号锁定页的按压验证会自动尝试两次，每次完成真实的 mouse down/hold/up 后重新识别页面。找不到继续按钮、找不到按压目标或两次后挑战仍存在时，页面状态机会进入人工处理；点击面板“继续”后会重新扫描，挑战仍在时不会继续后续阶段。该自动处理只存在于保活路径，不改变注册流程。
 2. 补充授权：先读取本地 refresh token；默认通过当前 HX-ProxyGroup flow 向 Microsoft token endpoint 做一次实际 refresh 探针。缺失、空值或探针返回`invalid_grant`等失败时，才使用当前已登录浏览器会话补充 OAuth/Graph 授权，并在失败后尝试同一 flow 的独立浏览器 Context。探针和 token 交换都关闭系统代理环境继承。
-3. 加入 HX-Email：只有拿到可用 refresh token 且`keepalive.auto_import_hx_email=true`才执行。HX-Email 导入完成后会重新查询账号、写入账号信息和邮件池，并调用 refresh 接口验证授权；这些步骤全部成功后才写入`hx_email_imported`检查点。
+3. 加入 HX-Email：只有拿到可用 refresh token 且`keepalive.auto_import_hx_email=true`才执行。保活走「先查后改」：先在目标分组内按邮箱地址查询，命中就直接更新该账号（不再重复导入），未命中才新增，因此重复保活不会让分组里出现重复账号。随后会重新查询账号、写入账号信息和邮件池，并调用 refresh 接口验证授权；这些步骤全部成功后才写入`hx_email_imported`检查点，detail 中的`mode`为`updated`或`imported`。
 
 与 `reg-factory` 的对应关系：其“解锁”部分对应这里的登录状态机，其“提取 Graph”对应这里的浏览器 OAuth/Graph 授权和 refresh 探针，其账号池回写对应这里的检查点、`outlook_token.txt`和 HX-Email 导入。没有复制它的 EZCaptcha 自动绕过、Clash/direct 回退或不受国家约束的代理池；当前 flow 始终由 HX-ProxyGroup 固定国家、声明节点和出口 IP。
 
 备用邮箱与 OAuth2：
 1. 在 `recovery_email.hx_email` 中配置 HX-Email 地址及认证信息。推荐同时配置 `api_key`、`username`、`password`；也可通过 `HX_EMAIL_API_KEY`、`HX_EMAIL_USERNAME`、`HX_EMAIL_PASSWORD` 环境变量提供，避免把凭据写入文件。`proxy_url` 仅填写 HX-Email 服务长期可访问的持久代理，不要填写注册 flow 当前租用的住宅节点代理。
+1.1 注册和保活可以分别配置目标分组：`register_account_group`与`keepalive_account_group`（都留空时回退到`account_group`），也可在面板「HX-Email 分组」卡片直接填写。`isolate_hx_email_group`默认关闭；开启后只有**注册**流程会在分组名后追加 flow ID，保活始终使用稳定分组，否则「先查后改」将无从查起。
 2. Microsoft 出现「让我们来保护你的帐户」时，程序会从 HX-Email 申请临时邮箱、等待六位安全码并自动确认。验证码被拒绝时会请求新代码，且不会复用错误代码；`max_code_attempts` 控制最多提交次数。OAuth 登录再次要求确认备选邮箱时，程序会提交同一个已验证地址，并从对应 HX-Email 临时邮箱读取新的安全代码。成功或失败后会结束临时邮箱任务；具备登录凭据时同时归档邮箱。
 3. 当前 HX-Email 的通用外部验证码接口尚不能读取独立临时邮箱，因此仅配置 API Key 时需先在 HX-Email 补齐该接口；配置用户名和密码后，本程序会自动回退到 `/api/v1/temp-mail/{id}/codes`。
 4. 注册浏览器、OAuth2 授权浏览器及 token 交换使用同一个 flow 代理租约；顶层`proxy`仅在未启用代理池时作为静态回退。
@@ -72,4 +81,4 @@ HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
 
 流量是程序观测到的网络字节，不等同于代理供应商账单流量；浏览器优先使用 CDP 统计响应字节，不支持时会使用响应头估算。新记录还会保存 flow ID、代理 session ID 和预检出口 IP，便于核对并行任务是否串用身份。每次按压验证码尝试另写入 `Results/captcha_attempts.jsonl`，可按 flow、session 和出口 IP 对照尝试次数。
 
-浏览器启动默认启用`prevent_direct_network_leaks`，限制非代理 WebRTC UDP 并关闭 QUIC；`verify_browser_exit_ip`还会分别验证注册页和 OAuth 页的真实浏览器出口。`strict_isolation`开启时，缺少 session-scoped 代理、唯一出口校验或独立 HX-Email 分组会直接停止启动。上述设置用于减少直连路径，不代表浏览器指纹会自动随机化。当前实现为注册页和 OAuth 页提供独立浏览器进程、Context、Cookie 和代理会话；同一个 worker 内两者共享同步 Playwright runtime，以避免在仍存活的 runtime 内重复启动 asyncio loop。实现不承诺每个窗口拥有不同的 Canvas、WebGL、字体或硬件指纹。
+浏览器启动默认启用`prevent_direct_network_leaks`，限制非代理 WebRTC UDP 并关闭 QUIC；`verify_browser_exit_ip`还会分别验证注册页和 OAuth 页的真实浏览器出口。`strict_isolation`开启时，缺少 session-scoped 代理或唯一出口校验会直接停止启动；HX-Email 分组隔离要求由「配置了`register_account_group`」或「开启`isolate_hx_email_group`」任一满足。手动代理列表模式同样受这些约束，只是不检查 HX-ProxyGroup 控制面相关项。上述设置用于减少直连路径，不代表浏览器指纹会自动随机化。当前实现为注册页和 OAuth 页提供独立浏览器进程、Context、Cookie 和代理会话；同一个 worker 内两者共享同步 Playwright runtime，以避免在仍存活的 runtime 内重复启动 asyncio loop。实现不承诺每个窗口拥有不同的 Canvas、WebGL、字体或硬件指纹。

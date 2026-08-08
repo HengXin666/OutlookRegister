@@ -18,7 +18,7 @@ from outlookregister.config.config_store import (
 )
 from outlookregister.core.main import run_concurrent_flows
 from outlookregister.dashboard.traffic_tracker import TrafficRecorder
-from outlookregister.proxy.proxy_rotation import RotatingProxyPool
+from outlookregister.proxy.proxy_pool_factory import build_proxy_pool
 
 
 class WorkflowError(RuntimeError):
@@ -92,9 +92,11 @@ class WorkflowRunner:
             errors = validate_config(config, for_run=True)
             if errors:
                 raise WorkflowError("配置在任务启动后变为无效: " + "；".join(errors))
-            proxy_config = dict(config.get("proxy_rotation") or {})
-            proxy_config["required_pool_size"] = workers
-            proxy_pool = RotatingProxyPool(proxy_config)
+            proxy_pool = build_proxy_pool(
+                config,
+                required_pool_size=workers,
+                config_path=self.project_root / "config.json",
+            )
             controller = self._controller(config)
             controller.results_dir = str(self.results_dir)
             controller.traffic = TrafficRecorder(self.results_dir)
