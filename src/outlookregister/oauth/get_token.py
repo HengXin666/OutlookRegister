@@ -31,8 +31,12 @@ class OAuthRecoveryChallengeError(RuntimeError):
 
 
 def save_oauth_diagnostic(page, attempt, stage='failed'):
-    results_dir = str(PROJECT_ROOT / 'Results')
+    results_dir = str(PROJECT_ROOT / 'Results' / 'logs')
     base_path = os.path.join(results_dir, f'oauth_{stage}_attempt_{attempt + 1}')
+    try:
+        os.makedirs(results_dir, exist_ok=True)
+    except OSError:
+        pass
     try:
         page.screenshot(path=f'{base_path}.png', full_page=True)
     except Exception:

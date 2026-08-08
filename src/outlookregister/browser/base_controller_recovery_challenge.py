@@ -3,7 +3,12 @@ import re
 import time
 from datetime import UTC, datetime
 
-from outlookregister.email.hx_email_client import HXEmailClient, HXEmailError
+from outlookregister.browser.outlook_page_state import classify_outlook_page
+from outlookregister.email.hx_email_client import (
+    HXEmailClient,
+    HXEmailError,
+    HXEmailRecoveryPageAdvanced,
+)
 
 
 class _BaseRecoveryChallenge:
@@ -11,7 +16,8 @@ class _BaseRecoveryChallenge:
 
     def _save_recovery_diagnostic(self, page, name):
         stamp = int(time.time())
-        base_path = os.path.join(self.results_dir, f'{name}_{stamp}')
+        base_path = os.path.join(self.results_dir, 'logs', f'{name}_{stamp}')
+        os.makedirs(os.path.dirname(base_path), exist_ok=True)
         try:
             page.screenshot(path=f'{base_path}.png', full_page=True)
         except Exception:
@@ -54,6 +60,43 @@ class _BaseRecoveryChallenge:
             raise HXEmailError('Microsoft 安全代码输入框已消失，但验证尚未确认')
         code_input.fill(code)
         return False
+
+    # 等待密保验证码期间，页面如果已经离开这些状态（例如已经跳到 KMSI「保持
+    # 登录」、已经进入邮箱、或被打回登录页），继续等验证码毫无意义，必须立刻
+    # 把控制权交回登录状态机，让它按页面真实状态继续。
+    RECOVERY_WAIT_STATES = frozenset(
+        {"recovery_email_form", "sms_verify", "unknown"}
+    )
+
+    def _recovery_wait_abort_reason(self, page):
+        """Return a reason when the page left the recovery-code flow.
+
+        The login loop already classifies the page every round; this is the
+        same evidence-based classifier used while a code is being awaited, so
+        a page that moved to KMSI / authenticated / sign-in / a new challenge
+        stops the (potentially long) mailbox wait immediately.
+
+        The check is intentionally conservative: while the Microsoft code input
+        is still on screen (or the page is mid-transition / still classified as
+        a recovery surface), we keep waiting. Only a page that no longer shows
+        any code input and is classified outside the recovery flow aborts.
+        """
+        try:
+            state = classify_outlook_page(page)
+        except Exception:
+            return ""
+        if state.name in self.RECOVERY_WAIT_STATES:
+            return ""
+        try:
+            if self._recovery_code_input(page) is not None:
+                # 验证码输入框仍在页面上：页面只是被暂时误分类，继续等待。
+                return ""
+        except Exception:
+            return ""
+        return (
+            f"页面已离开密保邮箱验证流程（{state.name}/{state.evidence}），"
+            "不再等待验证码"
+        )
 
     def confirm_recovery_email_challenge(
         self,
@@ -104,6 +147,14 @@ class _BaseRecoveryChallenge:
         code_input = None
         deadline = time.time() + 30
         while time.time() < deadline and code_input is None:
+            abort_reason = self._recovery_wait_abort_reason(page)
+            if abort_reason:
+                print(
+                    f'[Recovery Email] - {abort_reason}，'
+                    '停止等待安全代码输入框并交给登录状态机',
+                    flush=True,
+                )
+                return True
             code_input = self._recovery_code_input(page)
             if code_input is None:
                 page.wait_for_timeout(500)
@@ -119,13 +170,25 @@ class _BaseRecoveryChallenge:
         used_codes = set()
         for attempt in range(1, self.recovery_code_attempts + 1):
             if isinstance(hx_email, HXEmailClient):
-                code_details = hx_email.wait_for_code_details(
-                    mailbox,
-                    set(used_codes),
-                    not_before=code_requested_at,
-                    known_message_ids=known_message_ids,
-                    known_codes=known_codes,
-                )
+                try:
+                    code_details = hx_email.wait_for_code_details(
+                        mailbox,
+                        set(used_codes),
+                        not_before=code_requested_at,
+                        known_message_ids=known_message_ids,
+                        known_codes=known_codes,
+                        abort_check=lambda: self._recovery_wait_abort_reason(page),
+                    )
+                except HXEmailRecoveryPageAdvanced as exc:
+                    # 页面已经离开验证码页：验证流程到此结束，把控制权交回登录
+                    # 状态机，让它按页面真实状态继续（KMSI 点 Yes、已登录则直接
+                    # 进入授权、被打回登录页则重新填写），绝不继续干等验证码。
+                    print(
+                        f'[Recovery Email] - {exc}；'
+                        '密保验证码等待已中止，交给登录状态机继续',
+                        flush=True,
+                    )
+                    return True
                 code = str(code_details.get('code') or '').strip()
                 message_id = str(code_details.get('message_id') or '').strip()
                 if message_id:

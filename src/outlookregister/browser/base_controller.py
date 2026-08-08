@@ -15,6 +15,7 @@ from outlookregister.browser.base_controller_recovery_challenge import (
 )
 from outlookregister.browser.base_controller_registration import _BaseRegistration
 from outlookregister.browser.base_controller_resources import _BaseControllerResources
+from outlookregister.browser.base_controller_unlock import _BaseUnlockChallenge
 from outlookregister.dashboard.traffic_tracker import TrafficRecorder  # noqa: F401
 from outlookregister.email.hx_email_client import HXEmailClient  # noqa: F401
 
@@ -52,6 +53,7 @@ class BaseBrowserController(
     _BaseRecovery,
     _BaseRecoveryChallenge,
     _BaseRegistration,
+    _BaseUnlockChallenge,
     ABC,
 ):
     """Shared browser behavior used by Playwright and Patchright adapters."""

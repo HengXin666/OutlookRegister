@@ -109,6 +109,56 @@ class OutlookPageStateTests(unittest.TestCase):
         self.assertEqual(state.name, "verify_needed")
         self.assertTrue(is_manual_verification(state))
 
+    def test_stay_signed_in_prompt_is_kmsi_not_email_form(self):
+        # "Microsoft account requires JavaScript to sign in" 里含 "sign in"，
+        # 之前会被误判成 email_form；KMSI 确认页必须单独识别为 kmsi。
+        state = classify_outlook_page(
+            FakePage(
+                "https://login.live.com/login.srf?id=292841",
+                "Microsoft account requires JavaScript to sign in. "
+                "Stay signed in? user@outlook.com "
+                "Skip having to sign in every time. Yes No",
+                visible_selectors=(
+                    'button[data-testid="primaryButton"]',
+                    'button[data-testid="secondaryButton"]',
+                ),
+            )
+        )
+
+        self.assertEqual(state.name, "kmsi")
+        self.assertIn("stay-signed-in", state.evidence)
+        self.assertFalse(is_manual_verification(state))
+
+    def test_stay_signed_in_localized_copy_is_kmsi(self):
+        state = classify_outlook_page(
+            FakePage(
+                "https://login.live.com/login.srf",
+                "保持登录？ 不再显示此内容 是 否",
+            )
+        )
+
+        self.assertEqual(state.name, "kmsi")
+
+    def test_japanese_fluent_kmsi_is_not_email_form(self):
+        # 新 Fluent UI 的日文 KMSI 页标题是「サインインの状態を維持しますか?」，
+        # 正文含「サインイン」；之前会被 email_form 的「サインイン」文本标记抢先，
+        # 导致 KMSI 页被当成邮箱输入页卡住交给人工。
+        state = classify_outlook_page(
+            FakePage(
+                "https://login.live.com/ppsecure/post.srf",
+                "ko2lmqkohmrkut@outlook.com "
+                "サインインの状態を維持しますか? "
+                "毎回サインインする必要がないようにします。詳細情報 はい いいえ",
+                visible_selectors=(
+                    'button[data-testid="primaryButton"]',
+                    'button[data-testid="secondaryButton"]',
+                ),
+            )
+        )
+
+        self.assertEqual(state.name, "kmsi")
+        self.assertFalse(is_manual_verification(state))
+
     def test_locked_account_copy_is_classified_before_login_forms(self):
         state = classify_outlook_page(
             FakePage(

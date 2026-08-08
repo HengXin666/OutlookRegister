@@ -13,8 +13,8 @@ _CONFIG = {
     "keepalive_account_group": "保活分组",
 }
 
-_REGISTER_GROUP = {"id": 11, "name": "注册分组"}
-_KEEPALIVE_GROUP = {"id": 22, "name": "保活分组"}
+_REGISTER_GROUP = {"id": 11, "name": "注册分组", "proxy_url": "http://127.0.0.1:2334"}
+_KEEPALIVE_GROUP = {"id": 22, "name": "保活分组", "proxy_url": "http://127.0.0.1:2334"}
 
 _ACCOUNT = {"id": 7, "primary_usable_email": {"id": 70}}
 
@@ -170,6 +170,65 @@ class KeepaliveUpsertTests(unittest.TestCase):
         )
 
         self.assertEqual(result["usable_email_id"], 70)
+
+    def test_empty_proxy_falls_back_to_group_proxy_default_when_creating_group(self):
+        client, session = _client([
+            FakeResponse([]),
+            FakeResponse({"id": 23, "name": "保活分组", "proxy_url": "http://127.0.0.1:2334"}, 201),
+            FakeResponse({"accounts": [
+                {"id": 8, "primary_address": "a@outlook.com", "group_id": 23},
+            ]}),
+            FakeResponse(_ACCOUNT),
+            FakeResponse({"id": 700}, 201),
+            FakeResponse({"success": True}),
+        ])
+
+        client.upsert_outlook_account(
+            "a@outlook.com", "pw", "", "cid", "rt", stage="keepalive"
+        )
+
+        group_payload = _payload_of(session, "POST", "/groups")
+        self.assertEqual(group_payload["proxy_url"], "http://127.0.0.1:2334")
+
+    def test_existing_group_with_stale_proxy_is_self_healed(self):
+        client, session = _client([
+            FakeResponse([{"id": 22, "name": "保活分组", "proxy_url": "http://residential.example:9999"}]),
+            FakeResponse({"id": 22, "name": "保活分组", "proxy_url": "http://127.0.0.1:2334"}),
+            FakeResponse({"accounts": [
+                {"id": 7, "primary_address": "a@outlook.com", "group_id": 22},
+            ]}),
+            FakeResponse(_ACCOUNT),
+            FakeResponse({"id": 700}, 201),
+            FakeResponse({"success": True}),
+        ])
+
+        result = client.upsert_outlook_account(
+            "a@outlook.com", "pw", "", "cid", "rt", stage="keepalive"
+        )
+
+        self.assertEqual(result["mode"], "updated")
+        self.assertIn(("PUT", "/groups/22"), _methods(session))
+        self.assertEqual(
+            _payload_of(session, "PUT", "/groups/22")["proxy_url"],
+            "http://127.0.0.1:2334",
+        )
+
+    def test_existing_group_with_matching_proxy_is_not_rewritten(self):
+        client, session = _client([
+            FakeResponse([_KEEPALIVE_GROUP]),
+            FakeResponse({"accounts": [
+                {"id": 7, "primary_address": "a@outlook.com", "group_id": 22},
+            ]}),
+            FakeResponse(_ACCOUNT),
+            FakeResponse({"id": 700}, 201),
+            FakeResponse({"success": True}),
+        ])
+
+        client.upsert_outlook_account(
+            "a@outlook.com", "pw", "", "cid", "rt", stage="keepalive"
+        )
+
+        self.assertNotIn(("PUT", "/groups/22"), _methods(session))
 
 
 class RegistrationImportTests(unittest.TestCase):

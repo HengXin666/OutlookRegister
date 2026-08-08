@@ -27,8 +27,15 @@ class _LoginActions:
         recovery_email: str,
         recovery_challenge_handler: Any,
         config: dict[str, Any],
+        *,
+        page_holder: list[Any] | None = None,
     ) -> OutlookPageState:
-        """Run the recoverable Outlook login state machine in one browser flow."""
+        """Run the recoverable Outlook login state machine in one browser flow.
+
+        ``page_holder`` is an optional single-element list. When the login loop
+        detects that the page died it replaces the element with a freshly
+        opened page so the caller can keep using a live page afterwards.
+        """
 
         keepalive_config = config.get("keepalive") or {}
         try:
@@ -86,6 +93,7 @@ class _LoginActions:
         net_errors = 0
         unknown_rounds = 0
         email_rounds = 0
+        kmsi_rounds = 0
         last_state_name = ""
         ctx = {
             "timeout_seconds": timeout_seconds,
@@ -95,9 +103,11 @@ class _LoginActions:
             "net_errors": net_errors,
             "unknown_rounds": unknown_rounds,
             "email_rounds": email_rounds,
+            "kmsi_rounds": kmsi_rounds,
             "last_state_name": last_state_name,
         }
         return self._login_outlook_loop(
             page, controller, email, password, recovery_email,
             recovery_challenge_handler, config, ctx,
+            page_holder=page_holder,
         )

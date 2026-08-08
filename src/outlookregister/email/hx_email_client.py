@@ -14,7 +14,11 @@ import time
 # NOTE: ``stage_for_hx_email_path`` is imported by the transport mixin. It is
 # kept importable here too for backwards-compatible callers and tests that may
 # reference ``hx_email_client.stage_for_hx_email_path``.
-from outlookregister.email.hx_email_base import HXEmailError, _HXEmailBase
+from outlookregister.email.hx_email_base import (
+    HXEmailError,
+    HXEmailRecoveryPageAdvanced,
+    _HXEmailBase,
+)
 from outlookregister.email.hx_email_code import _HXEmailCode
 from outlookregister.email.hx_email_import import _HXEmailImport
 from outlookregister.email.hx_email_mailbox import _HXEmailMailbox
@@ -28,6 +32,29 @@ class HXEmailClient(_HXEmailTransport, _HXEmailImport, _HXEmailMailbox, _HXEmail
     the polling entry points that depend on patchable module globals live in
     this file.
     """
+
+    def _interruptible_sleep(self, seconds, abort_check=None):
+        """Sleep in small slices so callers can abort while the page changes.
+
+        ``abort_check`` is an optional zero-argument callback returning a
+        truthy reason string when the wait should stop. While sleeping we poll
+        it roughly every 0.4s; if it turns truthy we raise
+        :class:`HXEmailRecoveryPageAdvanced` immediately instead of finishing
+        the whole sleep. Uses module-level ``time.sleep`` so tests that patch
+        it keep working.
+        """
+        if abort_check is None:
+            time.sleep(seconds)
+            return
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            reason = abort_check()
+            if reason:
+                raise HXEmailRecoveryPageAdvanced(str(reason))
+            time.sleep(min(0.4, remaining))
 
     def wait_for_code(self, mailbox, exclude_codes=None, not_before=None):
         """Wait for a code while retaining the legacy string-only return value.
@@ -44,7 +71,7 @@ class HXEmailClient(_HXEmailTransport, _HXEmailImport, _HXEmailMailbox, _HXEmail
             )["code"]
 
         # Give the newly sent message time to arrive before the first mailbox read.
-        time.sleep(random.uniform(3, 5))
+        self._interruptible_sleep(random.uniform(3, 5))
         deadline = time.monotonic() + self.code_timeout
         last_error = None
         excluded = {str(code).strip() for code in (exclude_codes or ())}
@@ -55,7 +82,7 @@ class HXEmailClient(_HXEmailTransport, _HXEmailImport, _HXEmailMailbox, _HXEmail
                     return code
             except HXEmailError as exc:
                 last_error = exc
-            time.sleep(self.poll_interval)
+            self._interruptible_sleep(self.poll_interval)
         detail = f": {last_error}" if last_error else ""
         raise HXEmailError(f"等待 Microsoft 安全代码超时{detail}")
 
@@ -66,6 +93,7 @@ class HXEmailClient(_HXEmailTransport, _HXEmailImport, _HXEmailMailbox, _HXEmail
         not_before=None,
         known_message_ids=None,
         known_codes=None,
+        abort_check=None,
     ):
         """Wait for a newly received six-digit code and return its metadata.
 
@@ -80,7 +108,9 @@ class HXEmailClient(_HXEmailTransport, _HXEmailImport, _HXEmailMailbox, _HXEmail
             raise HXEmailError("等待验证码时缺少有效的发送时间基线")
 
         # Give the newly sent message time to arrive before the first mailbox read.
-        time.sleep(random.uniform(3, 5))
+        # The sleep is interruptible so a page that already moved on (KMSI,
+        # authenticated, ...) stops the wait without burning the full delay.
+        self._interruptible_sleep(random.uniform(3, 5), abort_check)
         deadline = time.monotonic() + self.code_timeout
         excluded = {str(code).strip() for code in (exclude_codes or ())}
         known_ids = (
@@ -102,7 +132,7 @@ class HXEmailClient(_HXEmailTransport, _HXEmailImport, _HXEmailMailbox, _HXEmail
                 candidates = self._read_code_candidates(mailbox)
             except HXEmailError as exc:
                 last_reason = str(exc)
-                time.sleep(self.poll_interval)
+                self._interruptible_sleep(self.poll_interval, abort_check)
                 continue
 
             accepted = []
@@ -179,7 +209,7 @@ class HXEmailClient(_HXEmailTransport, _HXEmailImport, _HXEmailMailbox, _HXEmail
                     for key, value in selected.items()
                     if not key.startswith("_")
                 }
-            time.sleep(self.poll_interval)
+            self._interruptible_sleep(self.poll_interval, abort_check)
 
         detail = f"；最近原因={last_reason}" if last_reason else ""
         raise HXEmailError(f"等待 Microsoft 安全代码超时{detail}")

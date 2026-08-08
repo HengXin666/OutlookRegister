@@ -44,6 +44,16 @@ class DashboardActionError(RuntimeError):
         self.status_code = status_code
 
 
+class KeepaliveSuperseded(DashboardActionError):
+    """保活已被用户重新提交的新流程取代，旧线程应静默退出。
+
+    不写入任何状态（状态已由新流程占用），只在 _run 里被专门捕获后忽略。
+    """
+
+    def __init__(self, message: str = "保活已被重新开始，旧流程停止"):
+        super().__init__(message, status_code=409)
+
+
 class ManualVerificationRequired(DashboardActionError):
     """The visible browser needs an operator to complete a site challenge."""
 

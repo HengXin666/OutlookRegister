@@ -153,6 +153,7 @@ def _validate_identity(
     for name, minimum, maximum in (
         ("keepalive.login_timeout_seconds", 30, 900),
         ("keepalive.manual_verification_timeout_seconds", 1, 3600),
+        ("keepalive.unlock_press_attempts", 1, 8),
     ):
         raw_name = name.split(".", 1)[1]
         if raw_name in keepalive:
@@ -160,7 +161,11 @@ def _validate_identity(
                 _cv._number(keepalive.get(raw_name), name, minimum, maximum)
             except _cv.ConfigError as exc:
                 errors.append(str(exc))
-    for name in ("verify_existing_oauth_token", "auto_import_hx_email"):
+    for name in (
+        "verify_existing_oauth_token",
+        "auto_import_hx_email",
+        "auto_unlock_locked_account",
+    ):
         if name in keepalive and not isinstance(keepalive.get(name), bool):
             errors.append(f"keepalive.{name} 必须是布尔值")
     country_code = str(identity.get("country_code") or "").strip()

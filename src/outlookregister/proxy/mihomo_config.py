@@ -46,11 +46,17 @@ def build_mihomo_config(endpoint: dict, local_port: int) -> dict:
             "enable": True,
             "ipv6": False,
             "enhanced-mode": "redir-host",
+            # 住宅数据面域名解析必须优先走系统 DNS：1.1.1.1/8.8.8.8 的 DoH
+            # 在部分网络（如 Clash TUN + 国内出口）不可达，会导致
+            # "dns resolve failed: couldn't find ip" 而无法拨号住宅节点。
+            # system 解析失败时再回退到 DoH。
             "nameserver": [
+                "system",
                 "https://1.1.1.1/dns-query",
                 "https://8.8.8.8/dns-query",
             ],
             "proxy-server-nameserver": [
+                "system",
                 "https://1.1.1.1/dns-query",
                 "https://8.8.8.8/dns-query",
             ],

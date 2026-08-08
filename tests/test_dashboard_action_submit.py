@@ -34,7 +34,7 @@ class DashboardActionRunnerTests(unittest.TestCase):
             release = threading.Event()
             runner = DashboardActionRunner(root, results, max_workers=1)
 
-            def execute(email, action):
+            def execute(email, action, state=None):
                 started.set()
                 release.wait(timeout=2)
                 return "done"
@@ -78,7 +78,7 @@ class DashboardActionRunnerTests(unittest.TestCase):
             runner = DashboardActionRunner(root, results, max_workers=1)
             attempts = []
 
-            def execute(email, action):
+            def execute(email, action, state=None):
                 attempts.append((email, action))
                 if len(attempts) == 1:
                     raise RuntimeError("first browser attempt failed")

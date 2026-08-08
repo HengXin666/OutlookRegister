@@ -68,7 +68,7 @@ class _CaptureActions:
 
         # Keep the dashboard response bounded while retaining the complete
         # record in the task's local diagnostic file.
-        record_path = self.results_dir / "keepalive_page_records.jsonl"
+        record_path = self.results_dir / "logs" / "keepalive_page_records.jsonl"
         try:
             record_path.parent.mkdir(parents=True, exist_ok=True)
             with self._file_lock:
@@ -102,8 +102,16 @@ class _CaptureActions:
         message: str,
         timeout_seconds: int,
         page: Any | None = None,
+        *,
+        retry_on_timeout: bool = False,
+        step: str | None = None,
     ) -> None:
+        """等待人工确认；KEEPALIVE（retry_on_timeout=True）超时不退出，保持
+        manual_verification_required 状态继续等待，绝不关闭/放弃保留的浏览器。"""
         key = (email.casefold(), action)
+        wait_step = step or (
+            "manual_challenge" if action == KEEPALIVE else None
+        )
         event = threading.Event()
         with self._lock:
             self._verification_events[key] = event
@@ -112,29 +120,49 @@ class _CaptureActions:
             action,
             "manual_verification_required",
             message,
-            step="manual_challenge" if action == KEEPALIVE else None,
+            step=wait_step,
             log_level="warning",
         )
         if page is not None:
             self._capture_page_record(email, action, page, message)
+        wait_seconds = max(1, min(timeout_seconds, 3600))
         try:
-            started_at = time.monotonic()
-            completed = event.wait(timeout=max(1, min(timeout_seconds, 3600)))
-            elapsed = time.monotonic() - started_at
-            with self._lock:
-                state = self._states.get(key[0], {}).get(key[1])
-                if state is not None:
-                    state["_paused_seconds"] = float(
-                        state.get("_paused_seconds") or 0.0
-                    ) + elapsed
-            if not completed:
-                raise DashboardActionError("人工验证等待超时，请重新提交保活操作")
+            while True:
+                started_at = time.monotonic()
+                completed = event.wait(timeout=wait_seconds)
+                elapsed = time.monotonic() - started_at
+                with self._lock:
+                    state = self._states.get(key[0], {}).get(key[1])
+                    if state is not None:
+                        state["_paused_seconds"] = float(
+                            state.get("_paused_seconds") or 0.0
+                        ) + elapsed
+                if completed:
+                    # 被用户重新开始取代时会 set 本事件唤醒旧线程；旧线程必须先
+                    # 检测被取代并退出，绝不能把新流程的状态覆盖成“继续运行”。
+                    self._raise_if_keepalive_superseded_thread()
+                    break
+                if self._shutdown_event.is_set():
+                    raise DashboardActionError("服务正在关闭，人工验证等待已停止")
+                if not retry_on_timeout:
+                    raise DashboardActionError("人工验证等待超时，请重新提交保活操作")
+                self._set_state(
+                    email,
+                    action,
+                    "manual_verification_required",
+                    "等待人工验证超时，浏览器已保留，请完成页面操作后点击继续",
+                    step=wait_step,
+                    log_level="warning",
+                )
             if self._shutdown_event.is_set():
                 raise DashboardActionError("服务正在关闭，人工验证等待已停止")
             self._set_state(email, action, "running", "人工验证已确认，正在继续保活流程")
         finally:
+            # 只移除属于本线程的 verification event：被取代的旧线程退出时，绝不
+            # 误删新流程随后注册的等待事件。
             with self._lock:
-                self._verification_events.pop(key, None)
+                if self._verification_events.get(key) is event:
+                    self._verification_events.pop(key, None)
 
     @staticmethod
     def _verification_visible(page: Any) -> bool:

@@ -205,7 +205,7 @@ const keepaliveSteps = [
   ["login", "登录"],
   ["email_login", "邮箱登录"],
   ["email_code", "获取邮箱验证码并提交完成登录"],
-  ["manual_challenge", "账号停止登录，等待人工按压测试"],
+  ["manual_challenge", "自动解锁安全验证（警告重按 → 长按挑战 → 恢复页面）"],
   ["oauth", "获取授权"],
   ["hx_email", "加入 HX-Email"],
 ] as const
@@ -227,6 +227,8 @@ const keepaliveStepAliases: Record<string, string> = {
   unlock_loading: "manual_challenge",
   unlock_verification: "manual_challenge",
   verification: "manual_challenge",
+  press_again: "manual_challenge",
+  unlock_recovery: "manual_challenge",
   oauth_check: "oauth",
   oauth_authorize: "oauth",
   finishing: "hx_email",
@@ -268,7 +270,14 @@ function KeepaliveStepPanel({
 }) {
   const waiting = state?.status === "paused" || state?.status === "pausing" || state?.status === "manual_verification_required"
   const running = state?.status === "running" || state?.status === "queued"
+  const busy = running || state?.status === "pausing" || state?.status === "paused"
+  const restartable = state?.status === "failed" || state?.status === "manual_verification_required"
   const active = waiting || running
+  const handleStart = () => {
+    if (restartable && !window.confirm("将关闭已保留的旧浏览器并重新执行，确定？")) return
+    onStart()
+  }
+  const currentStep = keepaliveStepId(state?.step)
   return (
     <section className="mt-5 border-t border-slate-200 pt-5" aria-label="保活步骤面板">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -278,9 +287,16 @@ function KeepaliveStepPanel({
         </div>
         <div className="flex items-center gap-2">
           <Badge tone={state ? actionTone(state.status) : "neutral"}>{state ? actionLabel(state.status) : "未开始"}</Badge>
-          <Button variant="primary" className="h-8 px-2.5" onClick={onStart} disabled={active} title="按顺序执行六个保活步骤"><Play className="h-3.5 w-3.5" />开始执行</Button>
+          <Button variant="primary" className="h-8 px-2.5" onClick={handleStart} disabled={busy} title={restartable ? "重新开始保活流程（将关闭已保留的旧浏览器）" : "按顺序执行六个保活步骤"}><Play className="h-3.5 w-3.5" />开始执行</Button>
         </div>
       </div>
+      {(state?.status === "manual_verification_required" || state?.status === "failed") && (
+        <div className={cn("mb-3 rounded-md border px-3 py-2 text-xs leading-5", state?.status === "manual_verification_required" ? "border-amber-200 bg-amber-50 text-amber-800" : "border-red-200 bg-red-50 text-red-700")} role="status">
+          {state?.status === "manual_verification_required"
+            ? "浏览器已保留，不会自动关闭。请完成页面操作后点击「继续」，自动化将从当前页面恢复。"
+            : "执行失败，浏览器已保留现场（未自动关闭）。可点击「开始执行」重新开始。"}
+        </div>
+      )}
       <div className="space-y-2">
         {keepaliveSteps.map(([step, label], index) => {
           const currentStep = keepaliveStepId(state?.step)
@@ -310,6 +326,12 @@ function KeepaliveStepPanel({
           )
         })}
       </div>
+      {currentStep === "manual_challenge" && state?.status === "running" && (
+        <p className="mt-2 text-xs font-medium text-teal-700">正在自动处理安全验证（警告重压 → 长按 → 恢复）…</p>
+      )}
+      {currentStep === "manual_challenge" && state?.status === "manual_verification_required" && (
+        <p className="mt-2 text-xs font-medium text-amber-700">等待人工按压/确认</p>
+      )}
       <div className="mt-4 rounded-md border border-slate-200 bg-slate-50/70 p-3" aria-label="保活日志" aria-live="polite">
         <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600"><ScrollText className="h-3.5 w-3.5" />日志</div>
         {!state && <p className="text-xs text-slate-400">任务开始后，当前步骤和告警会显示在这里。</p>}

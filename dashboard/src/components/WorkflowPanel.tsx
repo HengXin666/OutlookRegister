@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { CheckCircle2, LoaderCircle, LogIn, Pause, Play, RefreshCw, ScrollText, ShieldCheck } from "lucide-react"
+import { CheckCircle2, KeyRound, LoaderCircle, LogIn, Pause, Play, RefreshCw, ScrollText, ShieldCheck } from "lucide-react"
 import { Badge, Button, Card } from "./ui"
 import { cn } from "../lib/utils"
 
@@ -62,16 +62,18 @@ const stepLabels: Record<string, string> = {
   login: "打开 Outlook",
   email_login: "邮箱登录",
   email_code: "获取邮箱验证码并提交完成登录",
-  manual_challenge: "账号停止登录，等待人工按压测试",
+  manual_challenge: "自动解锁安全验证（警告重按 → 长按挑战 → 恢复页面）",
   oauth: "获取授权",
   hx_email: "加入 HX-Email",
   login_email: "填写邮箱",
   login_password: "填写密码",
   login_options: "处理登录选项",
-  unlock: "识别账号锁定",
-  unlock_loading: "加载解锁验证",
-  unlock_verification: "识别按压验证",
-  verification: "人工安全验证",
+  unlock: "警告页重新按压",
+  unlock_loading: "按压验证加载中",
+  unlock_verification: "自动完成按压验证",
+  verification: "自动按压验证",
+  press_again: "重新按压安全验证",
+  unlock_recovery: "恢复登录页面",
   recovery_email_form: "填写密保邮箱",
   recovery_code: "密保邮箱验证码",
   login_retry: "重试登录",
@@ -108,6 +110,8 @@ export function WorkflowPanel({ accounts }: { accounts: WorkflowAccount[] }) {
   const [registrationCount, setRegistrationCount] = useState(1)
   const [registrationConcurrency, setRegistrationConcurrency] = useState(1)
   const [authMode, setAuthMode] = useState<"password" | "recovery">("password")
+  const [forceReauth, setForceReauth] = useState(false)
+  const [keepaliveEmail, setKeepaliveEmail] = useState<string>("")
   const [accountActions, setAccountActions] = useState<AccountActionMap>({})
   const [submitting, setSubmitting] = useState(false)
   const [controlling, setControlling] = useState<string | null>(null)
@@ -132,7 +136,8 @@ export function WorkflowPanel({ accounts }: { accounts: WorkflowAccount[] }) {
     return () => window.clearInterval(timer)
   }, [refresh])
 
-  const registeredCount = useMemo(() => accounts.filter((account) => account.stages.registered.ok).length, [accounts])
+  const registeredAccounts = useMemo(() => accounts.filter((account) => account.stages.registered.ok), [accounts])
+  const registeredCount = registeredAccounts.length
 
   const submitRegistration = async () => {
     setSubmitting(true)
@@ -160,7 +165,7 @@ export function WorkflowPanel({ accounts }: { accounts: WorkflowAccount[] }) {
       const response = await fetch("/api/workflows/keepalive", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ auth_mode: authMode }),
+        body: JSON.stringify({ auth_mode: authMode, force_oauth_reauth: forceReauth, emails: keepaliveEmail ? [keepaliveEmail] : [] }),
       })
       const payload = (await response.json()) as { detail?: string }
       if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`)
@@ -169,6 +174,25 @@ export function WorkflowPanel({ accounts }: { accounts: WorkflowAccount[] }) {
       setMessage(error instanceof Error ? error.message : "保活任务提交失败")
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const submitReauth = async (email: string) => {
+    setControlling(`reauth-${email}`)
+    setMessage(null)
+    try {
+      const response = await fetch(`/api/accounts/${encodeURIComponent(email)}/actions/keepalive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_mode: "password", force_oauth_reauth: true }),
+      })
+      const payload = (await response.json()) as { detail?: string }
+      if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`)
+      await refresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "重新获取授权提交失败")
+    } finally {
+      setControlling(null)
     }
   }
 
@@ -236,7 +260,7 @@ export function WorkflowPanel({ accounts }: { accounts: WorkflowAccount[] }) {
               "登录",
               "邮箱登录",
               "获取邮箱验证码并提交完成登录",
-              "账号停止登录，等待人工按压测试",
+              "自动解锁安全验证（警告重按 → 长按挑战 → 恢复页面）",
               "获取授权",
               "加入 HX-Email",
             ].map((label) => <StepLine key={label} label={label} />)}
@@ -245,12 +269,30 @@ export function WorkflowPanel({ accounts }: { accounts: WorkflowAccount[] }) {
             <Button variant={authMode === "password" ? "primary" : "secondary"} onClick={() => setAuthMode("password")} title="使用账号密码登录">账号密码</Button>
             <Button variant={authMode === "recovery" ? "primary" : "secondary"} onClick={() => setAuthMode("recovery")} title="使用密保邮箱取件登录">密保邮箱取件</Button>
           </div>
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <Button variant="primary" onClick={() => void submitKeepalive()} disabled={submitting || registeredCount === 0} title="提交全部已注册账号的保活任务">
+          <div className="mt-4">
+            <label className="text-xs font-medium text-slate-500" htmlFor="keepalive-target">保活目标账号</label>
+            <select
+              id="keepalive-target"
+              value={keepaliveEmail}
+              onChange={(event) => setKeepaliveEmail(event.target.value)}
+              className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-teal-500"
+            >
+              <option value="">全部已注册账号（{registeredCount} 个）</option>
+              {registeredAccounts.map((account) => (
+                <option key={account.email} value={account.email}>{account.email}</option>
+              ))}
+            </select>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <Button variant="primary" onClick={() => void submitKeepalive()} disabled={submitting || registeredCount === 0} title={keepaliveEmail ? `仅保活 ${keepaliveEmail}` : "提交全部已注册账号的保活任务"}>
               {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              保活已注册账号
+              {keepaliveEmail ? "保活所选账号" : "保活已注册账号"}
             </Button>
-            <span className="text-xs text-slate-400">可处理 {registeredCount} 个账号</span>
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600" title="登录通过后强制在浏览器内重新执行 OAuth 授权（获取授权步骤），而不是沿用已有 token">
+              <input type="checkbox" checked={forceReauth} onChange={(event) => setForceReauth(event.target.checked)} className="h-4 w-4 accent-teal-700" />
+              登录后强制重新获取授权
+            </label>
+            <span className="text-xs text-slate-400">可处理 {keepaliveEmail ? 1 : registeredCount} 个账号</span>
           </div>
         </Card>
       </section>
@@ -287,10 +329,12 @@ export function WorkflowPanel({ accounts }: { accounts: WorkflowAccount[] }) {
                   <div className="flex flex-wrap items-center gap-2"><Badge tone={actionTone(state.status)}>{actionLabel(state.status)}</Badge><span className="break-all text-sm font-medium text-slate-800">{state.email}</span></div>
                   <div className="mt-2 flex items-center gap-2 text-xs text-slate-600"><span className="font-medium text-slate-800">当前步骤</span><span>{stepLabel(state.step)}</span></div>
                   <p className="mt-1 break-words text-xs text-slate-500">{state.message}</p>
+                  {(state.status === "manual_verification_required" || state.status === "failed") && <p className={cn("mt-1 text-xs font-medium", state.status === "manual_verification_required" ? "text-amber-600" : "text-red-600")}>浏览器已保留，不会自动关闭</p>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   {(state.status === "running" || state.status === "queued") && <Button variant="secondary" onClick={() => void controlAction(state, "pause", state.step)} disabled={controlling !== null} title="请求暂停保活自动化"><Pause className="h-4 w-4" />暂停当前步骤</Button>}
-                  {(state.status === "pausing" || state.status === "paused" || state.status === "manual_verification_required") && <Button variant="primary" onClick={() => void controlAction(state, "resume", state.step)} disabled={controlling !== null} title="从当前步骤继续自动化"><Play className="h-4 w-4" />继续当前步骤</Button>}
+                  {(state.status === "pausing" || state.status === "paused" || state.status === "manual_verification_required") && <Button variant="primary" onClick={() => void controlAction(state, "resume", state.step || "manual_challenge")} disabled={controlling !== null} title="从当前步骤继续自动化"><Play className="h-4 w-4" />继续当前步骤</Button>}
+                  {(state.status === "succeeded" || state.status === "failed" || state.status === "paused" || state.status === "manual_verification_required") && <Button variant="secondary" onClick={() => void submitReauth(state.email)} disabled={controlling !== null} title="重新登录后在浏览器内执行 OAuth 授权并加入 HX-Email"><KeyRound className="h-4 w-4" />获取授权</Button>}
                 </div>
               </div>
               <div className="mt-4 border-t border-slate-100 pt-3">

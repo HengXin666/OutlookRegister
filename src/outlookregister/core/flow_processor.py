@@ -202,10 +202,10 @@ def process_single_flow(controller, proxy_pool=None):
                     recovery_email=controller.get_recovery_email(),
                     client_id=controller.oauth_client_id,
                     refresh_token=refresh_token,
-                    proxy_url=(
-                        task_proxy
-                        or getattr(controller, 'hx_email_proxy_url', '')
-                    ),
+                    # 分组代理只使用显式配置（hx_email_proxy_url），缺省时由
+                    # HX-Email 客户端回落 127.0.0.1:2334；task_proxy 是住宅浏览器
+                    # 代理，绝不作为分组代理传入。
+                    proxy_url=getattr(controller, 'hx_email_proxy_url', ''),
                 )
             except Exception as exc:
                 controller._write_account_checkpoint(

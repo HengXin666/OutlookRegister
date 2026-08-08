@@ -16,7 +16,7 @@ Outlook 注册机
 6.`Scopes`按照申请的权限填，不需要Oauth2可留空。  
 
 使用教程：  
-1.先复制安全模板：`cp config.json.example config.json`。`config.json`和`Results/`只保存在本地，分别用于运行配置和账号、令牌、日志等运行产物，不要使用`git add -f`提交。  
+1.先复制安全模板：`cp config.json.example config.json`。`config.json`和`Results/`只保存在本地，用于运行配置和账号、令牌等运行产物；运行日志与失败现场统一归档到`Results/logs/`，不要使用`git add -f`提交。  
 2.不要配置顶层静态`proxy`，也不需要填写国家、浏览器语言、时区、token 或 Listener。在面板的「运行配置」页先选择代理来源：住宅节点池只需粘贴完整的 HX-ProxyGroup 控制 URL（`https://主机/ctl/<control-token>`），手动代理列表则每行粘贴一个完整代理（如`http://账号:密码@ip:端口`）。两者都点击「校验并启用」，校验成功后程序会自动保存对应配置。
 3.在面板的「工作流」页提交批量注册或批量保活；批量操作统一从面板启动，不直接使用脚本作为批量入口。
 4.如果你需要Oauth2，请在配置页启用`oauth2.enable_oauth2`并填写`Scopes`、`client_id`与`redirect_url`。
@@ -49,10 +49,10 @@ HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
 
 完全注册流程：面板提交任务后依次执行「注册」→「填写密保邮箱」→「获取 OAuth 授权」→「加入 HX-Email」。每个阶段会写入检查点；后续阶段失败不会丢失已生成的账号凭据。
 
-完全保活流程：在面板选择账号和「账号密码登录」或「密保邮箱取件登录」→如出现账号锁定页，自动点击「继续」并执行有界的按压验证→仍未通过时保留浏览器等待人工处理→如缺少授权则补充 OAuth→如配置启用则加入 HX-Email。保活队列会显示当前步骤和最近运行日志；运行中可随时点击「暂停」，工作线程到达安全检查点后停止自动化但不关闭已经启动的浏览器，人工操作后点击「继续」会从当前页面重新识别。整个流程复用同一个住宅节点租约，人工验证超时后需要重新提交该账号的保活任务。
+完全保活流程：在面板选择账号和「账号密码登录」或「密保邮箱取件登录」→如出现账号锁定页，自动点击「继续」、自动完成按压验证并把恢复页面点回登录状态→仍未通过时保留浏览器等待人工处理→如缺少授权则补充 OAuth→如配置启用则加入 HX-Email。保活队列会显示当前步骤和最近运行日志；运行中可随时点击「暂停」，工作线程到达安全检查点后停止自动化但不关闭已经启动的浏览器，人工操作后点击「继续」会从当前页面重新识别。整个流程复用同一个住宅节点租约，人工验证超时后需要重新提交该账号的保活任务。
 
 保活的“如有”判定基准：
-1. 人工验证：账号锁定页的按压验证会自动尝试两次，每次完成真实的 mouse down/hold/up 后重新识别页面。找不到继续按钮、找不到按压目标或两次后挑战仍存在时，页面状态机会进入人工处理；点击面板“继续”后会重新扫描，挑战仍在时不会继续后续阶段。该自动处理只存在于保活路径，不改变注册流程。
+1. 人工验证：账号锁定页会自动走完「点击继续 → 按压验证 → 恢复页面」三段。按压验证复用注册流程验证过的解法：优先点击 HUMAN/PerimeterX 的无障碍挑战按钮再点「再次按下」，该按钮不存在时回退到真实的 mouse down/抖动保持/up（挑战消失即提前松手）；默认最多尝试两次（`keepalive.unlock_press_attempts`），一次登录里最多自动解锁两轮。挑战帧和控件按 iframe URL 与 aria-label 关键字匹配，不依赖页面语言。找不到继续按钮、找不到按压目标、尝试用尽或恢复页面点不回已知登录状态时，页面状态机才进入人工处理；点击面板“继续”后会重新扫描，挑战仍在时不会继续后续阶段。把`keepalive.auto_unlock_locked_account`设为`false`可关闭该自动处理，直接回到纯人工。失败现场会写入`Results/logs/keepalive_unlock_*.png/.json`。该自动处理只存在于保活路径，不改变注册流程。
 2. 补充授权：先读取本地 refresh token；默认通过当前 HX-ProxyGroup flow 向 Microsoft token endpoint 做一次实际 refresh 探针。缺失、空值或探针返回`invalid_grant`等失败时，才使用当前已登录浏览器会话补充 OAuth/Graph 授权，并在失败后尝试同一 flow 的独立浏览器 Context。探针和 token 交换都关闭系统代理环境继承。
 3. 加入 HX-Email：只有拿到可用 refresh token 且`keepalive.auto_import_hx_email=true`才执行。保活走「先查后改」：先在目标分组内按邮箱地址查询，命中就直接更新该账号（不再重复导入），未命中才新增，因此重复保活不会让分组里出现重复账号。随后会重新查询账号、写入账号信息和邮件池，并调用 refresh 接口验证授权；这些步骤全部成功后才写入`hx_email_imported`检查点，detail 中的`mode`为`updated`或`imported`。
 
@@ -79,6 +79,6 @@ HX-ProxyGroup 住宅代理对接（动态住宅 IP）：
 4. 账号详情中的“补充授权”“加入 HX-Email”和“保活登录”可继续处理单个账号；操作在服务端后台线程执行，页面不会读取账号密码或 token。
 5. 新增的`Results/traffic_usage.jsonl`会按住宅注册、密保验证、OAuth 和 HX-Email API 记录观测流量；历史检查点没有流量字段，需重新运行任务后才会显示。
 
-流量是程序观测到的网络字节，不等同于代理供应商账单流量；浏览器优先使用 CDP 统计响应字节，不支持时会使用响应头估算。新记录还会保存 flow ID、代理 session ID 和预检出口 IP，便于核对并行任务是否串用身份。每次按压验证码尝试另写入 `Results/captcha_attempts.jsonl`，可按 flow、session 和出口 IP 对照尝试次数。
+流量是程序观测到的网络字节，不等同于代理供应商账单流量；浏览器优先使用 CDP 统计响应字节，不支持时会使用响应头估算。新记录还会保存 flow ID、代理 session ID 和预检出口 IP，便于核对并行任务是否串用身份。每次按压验证码尝试另写入 `Results/logs/captcha_attempts.jsonl`，可按 flow、session 和出口 IP 对照尝试次数。
 
 浏览器启动默认启用`prevent_direct_network_leaks`，限制非代理 WebRTC UDP 并关闭 QUIC；`verify_browser_exit_ip`还会分别验证注册页和 OAuth 页的真实浏览器出口。`strict_isolation`开启时，缺少 session-scoped 代理或唯一出口校验会直接停止启动；HX-Email 分组隔离要求由「配置了`register_account_group`」或「开启`isolate_hx_email_group`」任一满足。手动代理列表模式同样受这些约束，只是不检查 HX-ProxyGroup 控制面相关项。上述设置用于减少直连路径，不代表浏览器指纹会自动随机化。当前实现为注册页和 OAuth 页提供独立浏览器进程、Context、Cookie 和代理会话；同一个 worker 内两者共享同步 Playwright runtime，以避免在仍存活的 runtime 内重复启动 asyncio loop。实现不承诺每个窗口拥有不同的 Canvas、WebGL、字体或硬件指纹。

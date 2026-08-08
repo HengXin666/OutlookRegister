@@ -143,7 +143,7 @@ class MainFlowIsolationTests(unittest.TestCase):
             events.index(("release", "session-1")),
         )
 
-    def test_hx_email_import_receives_the_flow_proxy(self):
+    def test_hx_email_import_receives_the_configured_group_proxy_not_the_flow_proxy(self):
         events = []
         controller = FakeController(events)
         proxy_pool = FakeProxyPool(events)
@@ -158,9 +158,11 @@ class MainFlowIsolationTests(unittest.TestCase):
 
         self.assertTrue(result)
         import_event = next(event for event in events if event[0] == "hx_import")
+        # The residential/flow proxy (http://flow-session-proxy) must never leak
+        # into the HX-Email group; only the explicit group proxy is forwarded.
         self.assertEqual(
             import_event[1]["proxy_url"],
-            "http://flow-session-proxy",
+            "http://persistent-hx-proxy",
         )
 
     def test_flow_selects_one_country_and_passes_it_to_proxy_and_browser_context(self):

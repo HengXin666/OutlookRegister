@@ -209,9 +209,19 @@ def submit_keepalive_workflow(payload: dict[str, Any]) -> dict[str, Any]:
         ]
     states = []
     auth_mode = str(payload.get("auth_mode") or "password").strip().casefold()
+    force_oauth_reauth = bool(payload.get("force_oauth_reauth"))
     for email in emails[:1000]:
         try:
-            states.append(ACTION_RUNNER.submit(email, "keepalive", {"auth_mode": auth_mode}))
+            states.append(
+                ACTION_RUNNER.submit(
+                    email,
+                    "keepalive",
+                    {
+                        "auth_mode": auth_mode,
+                        "force_oauth_reauth": force_oauth_reauth,
+                    },
+                )
+            )
         except DashboardActionError as exc:
             states.append({"email": email, "status": "failed", "message": str(exc)})
     return {"states": states, "submitted": len(states)}

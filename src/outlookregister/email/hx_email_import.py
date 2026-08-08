@@ -4,9 +4,17 @@ Places a freshly authorized Outlook account into HX-Email, ensuring a reusable
 account group first. Registration always imports; keepalive upserts, so a
 returning account is updated in place instead of re-imported. The account-group
 cache is guarded by ``_account_group_lock`` (owned by the base mixin).
+
+Group proxy policy: the account group is only ever bound to the configured
+group proxy (default ``http://127.0.0.1:2334``). The residential/browser proxy
+lease must never leak into HX-Email, otherwise mailbox/refresh traffic is
+billed through the expensive residential pool and refresh failures can leave
+accounts in a broken state.
 """
 
 from outlookregister.email.hx_email_base import HXEmailError
+
+DEFAULT_GROUP_PROXY_URL = "http://127.0.0.1:2334"
 
 
 class _HXEmailImport:
@@ -51,6 +59,10 @@ class _HXEmailImport:
         keepalive run must not create a second copy of an account the group
         already tracks, while registration always starts from an import.
         """
+        # Empty/omitted group proxy always falls back to the stable group
+        # proxy instead of the residential lease. Callers must not pass the
+        # browser proxy here.
+        proxy_url = str(proxy_url or "").strip() or DEFAULT_GROUP_PROXY_URL
         group = self._ensure_account_group(proxy_url, stage=stage)
         group_id = group["id"]
 
@@ -155,13 +167,14 @@ class _HXEmailImport:
 
     def _ensure_account_group(self, proxy_url, stage=""):
         group_name = self.group_name_for_stage(stage)
+        proxy_url = str(proxy_url or "").strip() or DEFAULT_GROUP_PROXY_URL
         with self._account_group_lock:
             cached = self._account_groups.get(group_name)
             if cached is not None:
                 return cached
 
-            group = self._find_account_group(group_name)
-            if group is None:
+            existing = self._find_account_group(group_name)
+            if existing is None:
                 try:
                     group = self._v1_request(
                         "POST",
@@ -181,6 +194,24 @@ class _HXEmailImport:
                     group = self._find_account_group(group_name)
                     if group is None:
                         raise
+            else:
+                # Self-heal a stale group proxy (e.g. an earlier run leaked a
+                # residential lease) back to the configured group proxy. Only
+                # our own group name is touched, so unrelated groups are
+                # unaffected; a freshly created group already carries it.
+                group = existing
+                if str(group.get("proxy_url") or "").strip() != proxy_url:
+                    group = self._v1_request(
+                        "PUT",
+                        f"/api/v1/groups/{group['id']}",
+                        json={
+                            "name": group_name,
+                            "color": self.account_group_color,
+                            "proxy_url": proxy_url,
+                        },
+                    )
+                    if not isinstance(group, dict) or not group.get("id"):
+                        raise HXEmailError("HX-Email 分组更新响应缺少 ID")
 
             if not isinstance(group, dict) or not group.get("id"):
                 raise HXEmailError("HX-Email 分组响应缺少 ID")

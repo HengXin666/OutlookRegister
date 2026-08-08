@@ -45,11 +45,15 @@ from outlookregister.dashboard.dashboard_action_keepalive_state import (
 )
 from outlookregister.dashboard.dashboard_action_login import _LoginActions
 from outlookregister.dashboard.dashboard_action_login_loop import _LoginActionsLoop
+from outlookregister.dashboard.dashboard_action_login_unlock import _LoginUnlockActions
 from outlookregister.dashboard.dashboard_action_orchestration import _RunnerOrchestrator
 from outlookregister.dashboard.dashboard_action_runner_base import _RunnerBase
 from outlookregister.dashboard.dashboard_action_subroutines import _RunnerSubroutines
 from outlookregister.dashboard.traffic_tracker import TrafficRecorder
-from outlookregister.oauth.get_token import get_access_token
+from outlookregister.oauth.get_token import (
+    get_access_token,
+    refresh_oauth_token,
+)
 
 
 class DashboardActionRunner(
@@ -57,6 +61,7 @@ class DashboardActionRunner(
     _RunnerSubroutines,
     _LoginActions,
     _LoginActionsLoop,
+    _LoginUnlockActions,
     _KeepaliveActions,
     _KeepaliveLoginActions,
     _KeepaliveCompletionActions,
@@ -87,4 +92,5 @@ __all__ = [
     "TrafficRecorder",
     "classify_outlook_page",
     "get_access_token",
+    "refresh_oauth_token",
 ]

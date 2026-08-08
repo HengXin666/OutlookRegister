@@ -258,6 +258,40 @@ def classify_outlook_page(page: Any) -> OutlookPageState:
     ):
         return OutlookPageState("login_form", "text:password-form", path)
 
+    if any(
+        marker in body
+        for marker in (
+            "stay signed in",
+            "do you want to stay signed in",
+            "keep me signed in",
+            "don't show this again",
+            "保持登录",
+            "保持登入",
+            "保持登录状态",
+            "保持登入狀態",
+            "是否保持登录",
+            # Microsoft 的 KMSI 文案随 UI 版本与语言变化：
+            # 经典日文版是「接続を維持しますか」，新 Fluent 版是
+            # 「サインインの状態を維持しますか」。
+            "接続を維持しますか",
+            "状態を維持しますか",
+            "サインインの状態を維持",
+            "毎回サインインする必要がないように",
+            "로그인 유지",
+            "로그인 상태를 유지",
+            "mantener la sesión iniciada",
+            "rester connecté",
+            "angemeldet bleiben",
+            "mantieni l'accesso",
+            "manter conectado",
+            "aangemeld blijven",
+            "оставаться в системе",
+            "giữ đăng nhập",
+            "oturumunuz açık kalsın",
+        )
+    ):
+        return OutlookPageState("kmsi", "text:stay-signed-in", path)
+
     email_selector = _first_visible(
         page,
         ('input[type="email"]', 'input[name="loginfmt"]', "#usernameEntry", "#i0116"),

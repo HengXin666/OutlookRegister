@@ -19,6 +19,17 @@ class HXEmailError(RuntimeError):
         self.status_code = status_code
 
 
+class HXEmailRecoveryPageAdvanced(HXEmailError):
+    """The browser page left the recovery-code screen while a code was awaited.
+
+    Raised from ``wait_for_code_details`` when an ``abort_check`` callback
+    reports that the page has moved to a different state (KMSI, authenticated,
+    back to sign-in, a fresh challenge, ...). The caller should stop waiting
+    for a code and let the login state machine re-classify the real page
+    instead of assuming the code input is still on screen.
+    """
+
+
 class _HXEmailBase:
     """Configuration, credentials and shared request helpers."""
 

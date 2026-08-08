@@ -24,7 +24,19 @@ def _classify_outlook_page(page):
 
 
 class _LoginActionsLoop:
-    def _login_outlook_loop(self, page, controller, email, password, recovery_email, recovery_challenge_handler, config, ctx):
+    def _login_outlook_loop(
+        self,
+        page,
+        controller,
+        email,
+        password,
+        recovery_email,
+        recovery_challenge_handler,
+        config,
+        ctx,
+        *,
+        page_holder=None,
+    ):
         timeout_seconds = ctx["timeout_seconds"]
         manual_timeout = ctx["manual_timeout"]
         started_at = ctx["started_at"]
@@ -32,7 +44,9 @@ class _LoginActionsLoop:
         net_errors = ctx["net_errors"]
         unknown_rounds = ctx["unknown_rounds"]
         email_rounds = ctx["email_rounds"]
+        kmsi_rounds = ctx["kmsi_rounds"]
         last_state_name = ctx["last_state_name"]
+        unlock_rounds = 0
         while (
             time.monotonic()
             - started_at
@@ -40,6 +54,21 @@ class _LoginActionsLoop:
             < timeout_seconds
         ):
             self._wait_if_paused(email, KEEPALIVE)
+            if self._keepalive_page_dead(page):
+                if page_holder is None:
+                    raise DashboardActionError(
+                        "Outlook 登录页面已失效（被关闭），且当前流程无法重建页面"
+                    )
+                page = self._reopen_keepalive_page(
+                    email,
+                    controller,
+                    page_holder,
+                )
+                last_state_name = ""
+                unknown_rounds = 0
+                email_rounds = 0
+                kmsi_rounds = 0
+                continue
             requested_step = self._consume_resume_step(email, KEEPALIVE)
             if requested_step:
                 if requested_step in {"oauth", "hx_email"}:
@@ -128,37 +157,16 @@ class _LoginActionsLoop:
                 return state
 
             if is_manual_verification(state):
-                self._mark_keepalive_step(
+                unlock_rounds = self._handle_manual_verification_state(
+                    page,
+                    controller,
                     email,
-                    "login",
-                    "completed",
-                    "Outlook 登录页已打开",
+                    config,
+                    state,
+                    manual_timeout,
+                    unlock_rounds,
                 )
-                self._mark_keepalive_step(
-                    email,
-                    "email_login",
-                    "completed",
-                    "账号登录信息已提交",
-                )
-                self._set_progress(
-                    email,
-                    KEEPALIVE,
-                    "email_code",
-                    "当前页面未出现邮箱验证码输入框",
-                )
-                self._mark_keepalive_step(
-                    email,
-                    "email_code",
-                    "completed",
-                    "当前页面未出现邮箱验证码输入框",
-                )
-                self._await_manual_verification(
-                    email,
-                    KEEPALIVE,
-                    f"检测到需要人工处理的页面（{state.evidence}）。已停止自动化并保留浏览器，请查看页面记录并完成操作后点击继续",
-                    timeout_seconds=manual_timeout,
-                    page=page,
-                )
+                last_state_name = ""
                 self._wait_for_page(page, 750)
                 continue
 
@@ -216,7 +224,18 @@ class _LoginActionsLoop:
                     self._submit_outlook_form(page)
                 self._wait_for_page(page, 900)
                 if email_rounds >= 8 and _classify_outlook_page(page).name == "email_form":
-                    raise DashboardActionError("Outlook 登录停留在邮箱输入页，账号可能已被拒绝或不可用")
+                    # 邮箱输入页 8 轮不再是致命错误：保留浏览器交给人工处理，
+                    # 用户点击“继续”后从当前页面恢复继续循环。
+                    self._await_manual_verification(
+                        email,
+                        KEEPALIVE,
+                        "Outlook 停留在邮箱输入页，可能要求重新登录或验证；浏览器已保留，请完成页面操作后点击继续",
+                        timeout_seconds=manual_timeout,
+                        page=page,
+                        retry_on_timeout=True,
+                    )
+                    email_rounds = 0
+                    last_state_name = ""
                 continue
 
             if state.name == "login_form":
@@ -233,20 +252,48 @@ class _LoginActionsLoop:
                 self._wait_for_page(page, 900)
                 continue
 
+            if state.name == "kmsi":
+                # Microsoft 的 "Stay signed in?"（保持登录）确认页：自动点 Yes
+                # 继续，不要当作邮箱输入页卡住交给人工。
+                kmsi_rounds += 1
+                if not self._click_first_visible(
+                    page,
+                    (
+                        'button[data-testid="primaryButton"]',
+                        '#idSIButton9',
+                        'input[type="submit"][value="Yes"]',
+                        'button[type="submit"]:has-text("Yes")',
+                        'button[type="submit"]:has-text("是")',
+                        'button[type="submit"]:has-text("はい")',
+                        'button[type="submit"]:has-text("保持登录")',
+                        'button[type="submit"]:has-text("保持登入")',
+                    ),
+                ):
+                    self._submit_outlook_form(page)
+                self._wait_for_page(page, 1200)
+                if kmsi_rounds >= 5 and _classify_outlook_page(page).name == "kmsi":
+                    self._await_manual_verification(
+                        email,
+                        KEEPALIVE,
+                        "Stay signed in 页面未能自动确认，浏览器已保留，请点击 Yes 后点击继续",
+                        timeout_seconds=manual_timeout,
+                        page=page,
+                        retry_on_timeout=True,
+                    )
+                    kmsi_rounds = 0
+                    last_state_name = ""
+                continue
+
             if state.name == "locked":
-                self._mark_keepalive_step(
+                unlock_rounds = self._handle_locked_state(
+                    page,
+                    controller,
                     email,
-                    "email_code",
-                    "completed",
-                    "当前页面未出现邮箱验证码输入框",
+                    config,
+                    manual_timeout,
+                    unlock_rounds,
                 )
-                self._await_manual_verification(
-                    email,
-                    KEEPALIVE,
-                    "检测到账号停止登录页面。自动化已停止并保留浏览器，请完成页面上的人工操作后点击继续",
-                    timeout_seconds=manual_timeout,
-                    page=page,
-                )
+                last_state_name = ""
                 self._wait_for_page(page, 750)
                 continue
 

@@ -116,6 +116,8 @@ class _RunnerSubroutines:
     ) -> float:
         if self._shutdown_event.is_set():
             raise DashboardActionError("服务正在关闭，保活自动化已停止")
+        # 已被用户重新开始取代：旧线程不得再触碰/覆盖新流程的状态，直接退出。
+        self._raise_if_keepalive_superseded_thread()
         key = (email.casefold(), action)
         with self._lock:
             event = self._control_events.get(key)

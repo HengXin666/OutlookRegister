@@ -18,6 +18,8 @@
     "keepalive": {
         "login_timeout_seconds": 180,
         "manual_verification_timeout_seconds": 300,
+        "auto_unlock_locked_account": true,
+        "unlock_press_attempts": 2,
         "verify_existing_oauth_token": true,
         "auto_import_hx_email": true
     },
@@ -58,7 +60,7 @@
             "register_account_group": "OutlookRegister 自动注册",
             "keepalive_account_group": "OutlookRegister 保活",
             "account_group_color": "#238636",
-            "proxy_url": ""
+            "proxy_url": "http://127.0.0.1:2334"
         }
     },
     "proxy_rotation": {

@@ -30,7 +30,6 @@ _SECRET_KEYS = {
     "id_token",
     "password",
     "proxy",
-    "proxy_url",
     "control_url",
     "rotation_url",
     "refresh_token",

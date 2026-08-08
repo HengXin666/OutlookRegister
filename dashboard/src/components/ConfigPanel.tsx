@@ -345,8 +345,10 @@ export function ConfigPanel() {
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
           <label className="text-xs font-medium text-slate-500">登录超时（秒）<input type="number" min={30} max={900} value={Number(getPath(draft, ["keepalive", "login_timeout_seconds"], 180))} onChange={(event) => update(["keepalive", "login_timeout_seconds"], Number(event.target.value) || 180)} className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
           <label className="text-xs font-medium text-slate-500">人工验证等待（秒）<input type="number" min={1} max={3600} value={Number(getPath(draft, ["keepalive", "manual_verification_timeout_seconds"], 300))} onChange={(event) => update(["keepalive", "manual_verification_timeout_seconds"], Number(event.target.value) || 300)} className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
+          <label className="text-xs font-medium text-slate-500">按压验证自动尝试次数<input type="number" min={1} max={8} value={Number(getPath(draft, ["keepalive", "unlock_press_attempts"], 2))} onChange={(event) => update(["keepalive", "unlock_press_attempts"], Number(event.target.value) || 2)} className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
         </div>
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          <label className="flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" checked={Boolean(getPath(draft, ["keepalive", "auto_unlock_locked_account"], true))} onChange={(event) => update(["keepalive", "auto_unlock_locked_account"], event.target.checked)} className="h-4 w-4 accent-teal-700" />自动处理账号锁定页的按压验证</label>
           <label className="flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" checked={Boolean(getPath(draft, ["keepalive", "verify_existing_oauth_token"], true))} onChange={(event) => update(["keepalive", "verify_existing_oauth_token"], event.target.checked)} className="h-4 w-4 accent-teal-700" />保活时实际探针已有 refresh token</label>
           <label className="flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" checked={Boolean(getPath(draft, ["keepalive", "auto_import_hx_email"], true))} onChange={(event) => update(["keepalive", "auto_import_hx_email"], event.target.checked)} className="h-4 w-4 accent-teal-700" />有可用授权时自动加入 HX-Email</label>
         </div>
@@ -354,11 +356,12 @@ export function ConfigPanel() {
 
       <Card className="p-5">
         <div className="flex items-center gap-2 text-slate-900"><Mail className="h-4 w-4 text-sky-700" /><h2 className="font-semibold">HX-Email 分组</h2></div>
-        <p className="mt-1 text-xs text-slate-500">保活会先在保活分组内查找该账号：已存在则更新，不存在才新增。</p>
+        <p className="mt-1 text-xs text-slate-500">保活会先在保活分组内查找该账号：已存在则更新，不存在才新增。分组代理默认 127.0.0.1:2334，绝不使用住宅代理。</p>
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
           <label className="text-xs font-medium text-slate-500">注册账号分组<input type="text" autoComplete="off" spellCheck={false} value={String(getPath(draft, ["recovery_email", "hx_email", "register_account_group"], "") || "")} onChange={(event) => update(["recovery_email", "hx_email", "register_account_group"], event.target.value)} placeholder="OutlookRegister 自动注册" className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
           <label className="text-xs font-medium text-slate-500">保活账号分组<input type="text" autoComplete="off" spellCheck={false} value={String(getPath(draft, ["recovery_email", "hx_email", "keepalive_account_group"], "") || "")} onChange={(event) => update(["recovery_email", "hx_email", "keepalive_account_group"], event.target.value)} placeholder="OutlookRegister 保活" className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
         </div>
+        <label className="mt-4 block text-xs font-medium text-slate-500">分组代理（HTTP，留空则使用 127.0.0.1:2334）<input type="text" autoComplete="off" spellCheck={false} value={inputValue(getPath(draft, ["recovery_email", "hx_email", "proxy_url"])) || "http://127.0.0.1:2334"} onChange={(event) => update(["recovery_email", "hx_email", "proxy_url"], event.target.value)} placeholder="http://127.0.0.1:2334" className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-teal-500" /></label>
         <label className="mt-5 flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" checked={Boolean(getPath(draft, ["isolate_hx_email_group"], false))} onChange={(event) => update(["isolate_hx_email_group"], event.target.checked)} className="h-4 w-4 accent-teal-700" />每个 flow 使用独立分组（仅注册流程追加 flow ID）</label>
       </Card>
     </div>

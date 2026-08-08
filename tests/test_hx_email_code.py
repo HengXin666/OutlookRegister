@@ -38,7 +38,9 @@ class HXEmailClientCodeTests(unittest.TestCase):
         session = FakeSession([
             FakeResponse([]),
             FakeResponse({"detail": "duplicate group"}, 500),
-            FakeResponse([{"id": 3, "name": "OutlookRegister 自动注册"}]),
+            FakeResponse([
+                {"id": 3, "name": "OutlookRegister 自动注册", "proxy_url": "http://127.0.0.1:2334"},
+            ]),
         ])
         client = HXEmailClient(
             {

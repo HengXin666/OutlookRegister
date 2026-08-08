@@ -72,10 +72,9 @@ class _KeepaliveImportActions:
             recovery_email=context.recovery_email,
             client_id=client_id,
             refresh_token=token["refresh_token"],
-            proxy_url=(
-                getattr(context.proxy_lease, "proxy", "")
-                or str(hx_config.get("proxy_url") or "").strip()
-            ),
+            # 分组代理只使用配置值（缺省时由 HX-Email 客户端回落 127.0.0.1:2334），
+            # 绝不把住宅代理租约透传给 HX-Email 分组。
+            proxy_url=str(hx_config.get("proxy_url") or "").strip(),
             stage="keepalive",
         )
         action = "更新已有账号" if imported["mode"] == "updated" else "新增导入"

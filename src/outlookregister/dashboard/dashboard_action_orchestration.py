@@ -4,18 +4,28 @@ from __future__ import annotations
 import re
 from typing import Any
 
+
 from outlookregister.dashboard.dashboard_action_constants import (
     AUTHORIZE,
     IMPORT_HX_EMAIL,
     KEEPALIVE,
     DashboardActionError,
+    KeepaliveSuperseded,
     ManualVerificationRequired,
 )
 
 
 class _RunnerOrchestrator:
 
-    def _run(self, email: str, action: str) -> None:
+    def _run(
+        self,
+        email: str,
+        action: str,
+        state: dict[str, Any] | None = None,
+    ) -> None:
+        if action == KEEPALIVE and state is not None and state.get("_superseded"):
+            # 排队/启动期间已被用户重新开始取代：静默退出，不触碰任何状态。
+            return
         running_message = (
             "正在执行 OAuth 授权"
             if action == AUTHORIZE
@@ -23,8 +33,14 @@ class _RunnerOrchestrator:
         )
         self._set_state(email, action, "running", running_message, step="starting")
         try:
+            if action == KEEPALIVE:
+                # 供 _await_manual_verification/_wait_if_paused 等等待点检测被取代。
+                self._keepalive_thread_state.state = state
             self._wait_if_paused(email, action)
-            message = self._execute_action(email, action)
+            message = self._execute_action(email, action, state=state)
+        except KeepaliveSuperseded:
+            # 被新提交的保活流程取代：新流程已接管状态与浏览器，旧线程直接退出。
+            return
         except ManualVerificationRequired as exc:
             self._set_state(
                 email,
@@ -47,13 +63,28 @@ class _RunnerOrchestrator:
             # The final phase can finish between two browser/API calls. Check
             # once more before publishing success so a late pause request
             # still keeps the browser and task state available to the user.
-            self._wait_if_paused(email, action)
+            # 同时：被取代的旧线程若恰好在收尾前完成，绝不能把 succeeded 写进
+            # 新流程的状态，检测到被取代后静默退出。
+            try:
+                self._wait_if_paused(email, action)
+            except KeepaliveSuperseded:
+                return
             if action == KEEPALIVE:
                 self._finish_keepalive_steps(email)
             self._set_state(email, action, "succeeded", message, step="complete")
         finally:
+            # 只移除属于本流程的 control event：被取代的旧线程退出时，绝不能误删
+            # 新流程的 control event（否则新流程的暂停/继续控制会失效）。
             with self._lock:
-                self._control_events.pop((email.casefold(), action), None)
+                key = (email.casefold(), action)
+                event = self._control_events.get(key)
+                current_state = self._states.get(key[0], {}).get(key[1])
+                if (
+                    event is not None
+                    and current_state is not None
+                    and current_state.get("_control_event") is event
+                ):
+                    self._control_events.pop(key, None)
 
     def _public_error(self, email: str, detail: str) -> str:
         secrets: list[str] = []
@@ -125,11 +156,16 @@ class _RunnerOrchestrator:
             ]
         return []
 
-    def _execute_action(self, email: str, action: str) -> str:
+    def _execute_action(
+        self,
+        email: str,
+        action: str,
+        state: dict[str, Any] | None = None,
+    ) -> str:
         if action == AUTHORIZE:
             return self._authorize(email)
         if action == IMPORT_HX_EMAIL:
             return self._import_hx_email(email)
         if action == KEEPALIVE:
-            return self._keepalive(email)
+            return self._keepalive(email, state=state)
         raise DashboardActionError("不支持的账号操作")

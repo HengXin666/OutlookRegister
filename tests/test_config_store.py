@@ -145,6 +145,34 @@ class ConfigStoreTests(unittest.TestCase):
 
         self.assertEqual(validate_config(config, for_run=True), [])
 
+    def test_hx_email_group_proxy_is_visible_in_public_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps({
+                    "choose_browser": "patchright",
+                    "email_suffix": "@outlook.com",
+                    "recovery_email": {
+                        "hx_email": {
+                            "proxy_url": "http://127.0.0.1:2334",
+                            "api_key": "hx-secret",
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            public = ConfigStore(path).public()["config"]
+
+        self.assertEqual(
+            public["recovery_email"]["hx_email"]["proxy_url"],
+            "http://127.0.0.1:2334",
+        )
+        self.assertEqual(
+            public["recovery_email"]["hx_email"]["api_key"],
+            CONFIGURED_VALUE,
+        )
+
     def test_residential_control_url_is_redacted_from_public_config(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

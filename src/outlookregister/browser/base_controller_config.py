@@ -170,8 +170,9 @@ class _BaseControllerConfig:
             "worker_id": getattr(self.thread_local, "worker_id", ""),
             "attempt": attempts,
         }
-        path = os.path.join(self.results_dir, "captcha_attempts.jsonl")
+        path = os.path.join(self.results_dir, "logs", "captcha_attempts.jsonl")
         try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             with self.results_lock:
                 with open(path, "a", encoding="utf-8") as attempts_file:
                     attempts_file.write(json.dumps(record, ensure_ascii=False) + "\n")

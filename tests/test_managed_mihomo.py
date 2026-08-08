@@ -45,9 +45,19 @@ class ManagedMihomoConfigTests(unittest.TestCase):
                 self.assertTrue(config["proxies"][0]["tls"])
                 self.assertEqual(config["log-level"], "warning")
                 self.assertEqual(config["dns"]["enhanced-mode"], "redir-host")
+                # 住宅数据面解析优先系统 DNS，DoH 仅作回退（DoH 在部分网络不可达）。
                 self.assertEqual(
                     config["dns"]["proxy-server-nameserver"],
                     [
+                        "system",
+                        "https://1.1.1.1/dns-query",
+                        "https://8.8.8.8/dns-query",
+                    ],
+                )
+                self.assertEqual(
+                    config["dns"]["nameserver"],
+                    [
+                        "system",
                         "https://1.1.1.1/dns-query",
                         "https://8.8.8.8/dns-query",
                     ],

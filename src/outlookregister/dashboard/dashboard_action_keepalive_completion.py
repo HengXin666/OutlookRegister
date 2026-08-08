@@ -20,6 +20,8 @@ class _KeepaliveCompletionActions:
         login_state: Any,
         resume_destination: str,
     ) -> str:
+        # 被用户重新开始取代后，不得再写 token / 导入 HX-Email 等成果。
+        self._raise_if_keepalive_superseded(context.state)
         config = context.config
         email = context.email
         password = context.password
@@ -31,6 +33,7 @@ class _KeepaliveCompletionActions:
         token = self._read_existing_token(email)
         completion_notes: list[str] = []
         token_probe_error = ""
+        force_reauth = bool(getattr(context, "force_oauth_reauth", False))
 
         skip_oauth = resume_destination == "hx_email"
         if skip_oauth:
@@ -45,9 +48,24 @@ class _KeepaliveCompletionActions:
                     "无法直接从第 6 步继续：该账号没有可用的 OAuth refresh token"
                 )
 
+        if force_reauth:
+            self._set_progress(
+                email,
+                KEEPALIVE,
+                "oauth_authorize",
+                "用户要求重新获取授权，正在浏览器内执行 OAuth 授权",
+            )
+            self._append_checkpoint(
+                email,
+                password,
+                "oauth_reauth_forced",
+                "已强制重新获取授权：跳过已有 refresh token 探针，浏览器内 OAuth",
+            )
+
         verify_existing_token = bool(
             keepalive_config.get("verify_existing_oauth_token", True)
             and not skip_oauth
+            and not force_reauth
         )
         if token and not str(token.get("refresh_token") or "").strip():
             token = None
@@ -128,7 +146,7 @@ class _KeepaliveCompletionActions:
                 "completed",
                 "已有 OAuth refresh token，按配置跳过重新授权",
             )
-        if bool(oauth_config.get("enable_oauth2", False)) and not token:
+        if bool(oauth_config.get("enable_oauth2", False)) and (not token or force_reauth):
             token = self._authorize_keepalive(
                 context,
                 oauth_client_id,
@@ -142,6 +160,8 @@ class _KeepaliveCompletionActions:
                 "按第 6 步继续，沿用已有 OAuth refresh token",
             )
 
+        # 写成果前再检查一次：授权阶段可能耗时较长，期间被取代则放弃收尾。
+        self._raise_if_keepalive_superseded(context.state)
         self._import_keepalive_account(
             context,
             token,
@@ -171,6 +191,7 @@ class _KeepaliveCompletionActions:
         token_probe_error: str,
     ) -> dict[str, str] | None:
         email = context.email
+        self._raise_if_keepalive_superseded(context.state)
         if not client_id:
             self._mark_keepalive_step(
                 email,
@@ -195,6 +216,14 @@ class _KeepaliveCompletionActions:
         suffix = str(context.config.get("email_suffix") or "")
         local_part = email[: -len(suffix)] if suffix else email
         oauth_error = token_probe_error
+        if self._keepalive_page_dead(context.page):
+            # 登录成功后、授权开始前页面被关闭：先重建页面（同一代理会话），
+            # 绝不让授权阶段对着一个已关闭的页面空转。
+            context.page = self._reopen_keepalive_page(
+                email,
+                context.controller,
+                [context.page],
+            )
         candidates = [context.page]
         for index, candidate_page in enumerate(candidates):
             try:

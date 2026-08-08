@@ -16,6 +16,7 @@ from outlookregister.dashboard.dashboard_action_constants import (
     VALID_ACTIONS,
     AccountArtifactStore,
     DashboardActionError,
+    KeepaliveSuperseded,
 )
 
 
@@ -35,6 +36,14 @@ class _RunnerBase:
             max_workers=max(1, int(max_workers)),
             thread_name_prefix="dashboard-account-action",
         )
+        # patchright 的 sync_playwright().start() 会把连接绑定到当前线程；一旦某
+        # 线程上存在未 stop 的保留浏览器（保活失败后浏览器被保留），该线程就永久
+        # 无法再次 sync_playwright().start()（抛 "Playwright Sync API inside the
+        # asyncio loop"）。ThreadPoolExecutor 复用线程会让新任务落到“中毒”线程上
+        # 必然失败。因此每个 action 在全新专用线程上执行，并发上限用信号量控制。
+        self._action_semaphore = threading.BoundedSemaphore(
+            max(1, int(max_workers))
+        )
         self._lock = threading.Lock()
         self._file_lock = threading.Lock()
         self._states: dict[str, dict[str, dict[str, Any]]] = {}
@@ -43,6 +52,9 @@ class _RunnerBase:
         self._subscribers: set[queue.Queue[dict[str, Any]]] = set()
         self._shutdown_event = threading.Event()
         self._checkpoint_context = threading.local()
+        # 当前线程正在执行的保活 state 引用（仅 KEEPALIVE 线程设置）。用于
+        # 重新开始（supersede）时让旧线程在等待点检测自己被取代后立即退出。
+        self._keepalive_thread_state = threading.local()
 
     def submit(
         self,
@@ -58,9 +70,34 @@ class _RunnerBase:
 
         key = normalized_email.casefold()
         now = self._timestamp()
+        supersede_wakeup: list[threading.Event] = []
         with self._lock:
             account_states = self._states.setdefault(key, {})
-            if any(
+            old_keepalive_state = (
+                account_states.get(KEEPALIVE) if action == KEEPALIVE else None
+            )
+            old_keepalive_status = (
+                (old_keepalive_state or {}).get("status")
+                if old_keepalive_state is not None
+                else None
+            )
+            # 保活允许“重新开始”：用户在 manual_verification_required/failed 等
+            # 状态点“开始执行”时，不是 409 拒绝，而是取代旧流程。旧线程会检测到
+            # _superseded 后静默退出（不写状态、不把浏览器写回保留表），旧浏览器与
+            # 代理由新流程开头的 _discard_preserved_keepalive 显式清理（用户已确认）。
+            superseding = bool(
+                action == KEEPALIVE
+                and old_keepalive_state is not None
+                and old_keepalive_status
+                in {
+                    "queued",
+                    "running",
+                    "pausing",
+                    "paused",
+                    "manual_verification_required",
+                }
+            )
+            if not superseding and any(
                 state.get("status")
                 in {
                     "queued",
@@ -72,6 +109,16 @@ class _RunnerBase:
                 for state in account_states.values()
             ):
                 raise DashboardActionError("该账号已有操作正在执行", status_code=409)
+            if superseding:
+                old_keepalive_state["_superseded"] = True
+                old_verification_event = self._verification_events.pop(
+                    (key, KEEPALIVE), None
+                )
+                old_control_event = old_keepalive_state.get("_control_event")
+                if old_verification_event is not None:
+                    supersede_wakeup.append(old_verification_event)
+                if old_control_event is not None:
+                    supersede_wakeup.append(old_control_event)
             state = {
                 "email": normalized_email,
                 "action": action,
@@ -91,15 +138,20 @@ class _RunnerBase:
             if options:
                 state["options"] = {
                     "auth_mode": str(options.get("auth_mode") or "password"),
+                    "force_oauth_reauth": bool(options.get("force_oauth_reauth")),
                 }
             account_states[action] = state
             control_event = threading.Event()
             control_event.set()
+            state["_control_event"] = control_event
             self._control_events[(key, action)] = control_event
             self._publish_state_locked(state)
             queued_state = self._public_state(state)
+        for wake_event in supersede_wakeup:
+            # 唤醒可能正等待人工确认/暂停中的旧线程，使其立即检查被取代标记后退出。
+            wake_event.set()
         try:
-            self.executor.submit(self._run, normalized_email, action)
+            self._spawn_action_thread(normalized_email, action, state=state)
         except Exception as exc:
             with self._lock:
                 current_states = self._states.get(key, {})
@@ -113,6 +165,47 @@ class _RunnerBase:
                 status_code=503,
             ) from exc
         return queued_state
+
+    def _spawn_action_thread(
+        self,
+        email: str,
+        action: str,
+        state: dict[str, Any] | None = None,
+    ) -> None:
+        """在全新专用线程上执行一个账号操作。
+
+        不能复用线程池线程：任何线程只要绑定过 sync_playwright 连接（保活失败后
+        保留浏览器时连接不会 stop），同线程再次 sync_playwright().start() 必定抛
+        "It looks like you are using Playwright Sync API inside the asyncio loop"。
+        全新线程 + 信号量既保证并发上限，也保证永不与保留浏览器的连接共用线程。
+        state 是该动作在 submit 时创建的状态对象：重新开始（supersede）时新提交
+        会直接在旧线程持有的 state 上打 _superseded 标记，旧线程据此检测被取代。
+        """
+
+        def _run_action() -> None:
+            with self._action_semaphore:
+                self._run(email, action, state=state)
+
+        thread = threading.Thread(
+            target=_run_action,
+            name=f"dashboard-action-{action}-{email.casefold()}",
+            daemon=True,
+        )
+        thread.start()
+
+    def _raise_if_keepalive_superseded_thread(self) -> None:
+        """当前线程是保活线程且其流程已被用户重新开始取代时抛出 KeepaliveSuperseded。"""
+        state = getattr(self._keepalive_thread_state, "state", None)
+        if state is not None and state.get("_superseded"):
+            raise KeepaliveSuperseded()
+
+    @staticmethod
+    def _raise_if_keepalive_superseded(
+        state: dict[str, Any] | None,
+    ) -> None:
+        """state 是旧保活流程持有的状态对象且已被新提交标记取代时抛出。"""
+        if state is not None and state.get("_superseded"):
+            raise KeepaliveSuperseded()
 
     def resume_verification(self, email: str, action: str) -> dict[str, Any]:
         return self.resume(email, action)

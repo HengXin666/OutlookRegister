@@ -194,7 +194,7 @@ class FlowIsolationTests(unittest.TestCase):
 
             records = [
                 json.loads(line)
-                for line in Path(directory, "captcha_attempts.jsonl")
+                for line in Path(directory, "logs", "captcha_attempts.jsonl")
                 .read_text(encoding="utf-8")
                 .splitlines()
             ]
